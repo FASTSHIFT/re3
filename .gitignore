@@ -367,3 +367,5 @@ build-rpi/
 rpi-sysroot/
 # Local convenience symlink to GTA3 assets
 gta3_assets
+# Local convenience symlink to reference project (ST7789 SPI)
+ref_lv_gba_emu
