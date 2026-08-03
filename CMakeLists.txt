@@ -64,6 +64,13 @@ if(${PROJECT}_TIMEBARS_LOG)
     message(STATUS "${PROJECT}_TIMEBARS_LOG enabled: per-stage timers to log")
 endif()
 
+# Drop bandwidth-heavy post-processing (screen rain droplets) for low-end GPUs.
+option(${PROJECT}_RPI_LEAN_FX "Disable fullscreen-copy post effects (screen droplets)" OFF)
+if(${PROJECT}_RPI_LEAN_FX)
+    add_compile_definitions(RPI_LEAN_FX)
+    message(STATUS "${PROJECT}_RPI_LEAN_FX enabled: lean post-processing")
+endif()
+
 if(${PROJECT}_VENDORED_LIBRW)
     add_subdirectory(vendor/librw)
 else()

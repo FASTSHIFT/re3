@@ -134,20 +134,24 @@ graph LR
 
 **注意**：`tbDisplay()` 受运行时变量 `gbShowTimebars` 门控（默认 false，需调试菜单开启）。为便于自动采集，`TIMEBARS_LOG` 下 `gbShowTimebars` 默认强制为 `true`（见 `src/core/main.cpp`）。
 
-## 8. 性能基线（开场实时动画）
+## 8. 性能基线
 
-**测试场景**：开场实时渲染动画——固定、可重复，是理想的基线场景（每次运行一致，便于优化前后精确对比）。
+**测试方式**：手动进入游戏世界（New Game），在游戏内场景采集。`TIMEBARS_LOG` 每 ~30 帧记录一次。
 
-**基线数据（176 样本，1920×1080，默认画质，未锁帧）**：
+**基线数据（游戏内场景，89 样本，640×480，默认画质，未锁帧）**：
 
 | 指标 | 值 |
 |---|---|
-| FPS 平均 | 71.7 |
-| **FPS 最低** | **11.6**（最重帧，优化主要目标） |
+| **FPS 平均** | **33.3** |
+| **FPS 最低** | **12.2**（重场景，优化主要目标） |
 | FPS 最高 | 233.5（简单帧） |
-| RenderScene 提交 | avg 0.57ms / max 4.30ms |
-| **CGame::Process (CPU)** | **avg 0.12ms / max 1.50ms** |
-| FrameTime 各段和 | avg 1.07ms / max 5.40ms |
+| RenderScene 提交 | avg 0.65ms / max 1.75ms |
+| **CGame::Process (CPU)** | **avg 0.11ms / max 1.00ms** |
+| FrameTime 各段和 | avg 1.18ms / max 2.85ms |
+
+> 另有一组 1080p 开场动画基线（176 样本）：avg 71.7 / min 11.6fps，CGame::Process avg 0.12ms，结论一致。
+
+**优化对照基准**：`FPS min=12.2`、`FPS avg=33.3` @ 640×480。每项优化后同类场景复测对比。
 
 **结论（诊断确认）**：
 

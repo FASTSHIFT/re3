@@ -321,6 +321,13 @@ enum Config {
 #undef SCREEN_DROPLETS		// we need the backbuffer for this effect
 #endif
 
+#ifdef RPI_LEAN_FX
+// Raspberry Pi (VideoCore IV, bandwidth-bound): drop the Xbox-era screen rain
+// droplets. They force a full-screen backbuffer grab + full-screen post pass
+// while raining, which is a major fill-rate/bandwidth cost. Not in original GTA3.
+#undef SCREEN_DROPLETS
+#endif
+
 // Particle
 //#define PC_PARTICLE
 //#define PS2_ALTERNATIVE_CARSPLASH // unused on PS2
