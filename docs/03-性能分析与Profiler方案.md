@@ -122,8 +122,62 @@ graph LR
 > 短期：继续在 HDMI + 桌面(XWayland) 下用 timebar 做性能优化。
 > 中期：SDL2+KMSDRM 脱离桌面。
 
-## 7. 待办
+## 7. 日志式 Profiler（已实现）
 
-- [ ] 在构建中启用 `TIMEBARS`，重新部署，屏幕确认 FPS/各段耗时可见。
-- [ ] 采集基线：菜单、初始出生点、进城、雨天各场景的 FPS + RenderScene/CGame::Process ms。
-- [ ] 据基线确认主瓶颈（预期为 RenderScene 填充率），再进入 shader/分辨率优化。
+除屏幕显示外，新增 `TIMEBARS_LOG` 宏（CMake 选项 `RE3_TIMEBARS_LOG`），在 `tbDisplay()` 中每 ~30 帧把各阶段耗时打到 stdout：
+
+```
+[TB] FPS=13.0 | CGame::Process=0.25 | ... | RenderScene=1.60 | ... | FrameTime=2.75
+```
+
+好处：无需盯屏幕，SSH 读日志即可分析瓶颈。
+
+**注意**：`tbDisplay()` 受运行时变量 `gbShowTimebars` 门控（默认 false，需调试菜单开启）。为便于自动采集，`TIMEBARS_LOG` 下 `gbShowTimebars` 默认强制为 `true`（见 `src/core/main.cpp`）。
+
+## 8. 性能基线（开场实时动画）
+
+**测试场景**：开场实时渲染动画——固定、可重复，是理想的基线场景（每次运行一致，便于优化前后精确对比）。
+
+**基线数据（176 样本，1920×1080，默认画质，未锁帧）**：
+
+| 指标 | 值 |
+|---|---|
+| FPS 平均 | 71.7 |
+| **FPS 最低** | **11.6**（最重帧，优化主要目标） |
+| FPS 最高 | 233.5（简单帧） |
+| RenderScene 提交 | avg 0.57ms / max 4.30ms |
+| **CGame::Process (CPU)** | **avg 0.12ms / max 1.50ms** |
+| FrameTime 各段和 | avg 1.07ms / max 5.40ms |
+
+**结论（诊断确认）**：
+
+```mermaid
+graph TD
+    A["FPS 波动 233→11.6 (20倍)"] --> B["CGame::Process 恒定 ~0.1ms<br/>CPU占比<2%"]
+    A --> C["最低帧实际86ms<br/>但计时段总和仅5.4ms"]
+    B --> D["瓶颈 100% 在 GPU"]
+    C --> E["80ms 缺口 = GPU异步执行+SwapBuffers等待<br/>= VideoCore IV 填充率打满"]
+    D --> F["优化必须针对 GPU 填充率"]
+    E --> F
+```
+
+1. **CPU 完全无辜**：最低帧 CPU 仅 1.5ms，剩余 84ms 全在 GPU。
+2. **FPS 由填充率/overdraw 决定**：简单帧 233fps，烟雾等高 overdraw 帧 11.6fps。
+3. **timebar 低估 GPU**：GLES 异步 + SwapBuffers 等待未计入，缺口即 GPU 真实负载。
+
+**实测参考（游戏内）**：空旷场景 ~29fps（曾被 30fps 限制器锁定），烟雾场景 ~10-15fps（填充率瓶颈）。
+
+## 9. 优化优先级（据基线确定）
+
+| 优先级 | 优化 | 预期 | 原理 |
+|---|---|---|---|
+| 1 | 降分辨率 (→480p) | ⭐最大 | 填充率需求线性下降，1080p→480p 省约 6 倍 |
+| 2 | shader 片元 mediump | ⭐大 | VC4 片元吞吐约翻倍 |
+| 3 | 消除依赖性纹理读取 | 中 | 烟雾多重采样收益明显 |
+| 4 | 减少粒子 / 拉近雾 | 中 | 直接砍 overdraw 源头 |
+
+## 10. 待办
+
+- [ ] 降分辨率重测开场动画，对比 FPS min（11.6 → ?）。
+- [ ] shader mediump 后同场景复测。
+- [ ] 每步单一变量，同基线场景对比。

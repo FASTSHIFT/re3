@@ -57,6 +57,13 @@ if(${PROJECT}_TIMEBARS)
     message(STATUS "${PROJECT}_TIMEBARS enabled: on-screen FPS + timers")
 endif()
 
+# Also print per-stage timings to stdout/log (read bottlenecks without the screen).
+option(${PROJECT}_TIMEBARS_LOG "Print per-stage frame timers to stdout/log" OFF)
+if(${PROJECT}_TIMEBARS_LOG)
+    add_compile_definitions(TIMEBARS_LOG)
+    message(STATUS "${PROJECT}_TIMEBARS_LOG enabled: per-stage timers to log")
+endif()
+
 if(${PROJECT}_VENDORED_LIBRW)
     add_subdirectory(vendor/librw)
 else()

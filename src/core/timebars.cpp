@@ -84,6 +84,25 @@ void tbDisplay()
 #endif
 
 	msCollected[(curMS++) % MAX_MS_COLLECTED] = RsTimer();
+
+#ifdef TIMEBARS_LOG
+	// Print per-stage timings to stdout so bottlenecks can be read from the
+	// log without watching the screen. Throttled to once per ~30 frames.
+	{
+		static uint32 logCounter = 0;
+		if ((logCounter++ % 30) == 0) {
+			printf("[TB] FPS=%.1f", Diag_GetFPS());
+			for (uint32 i = 0; i < TimerBar.count; i++)
+				printf(" | %s=%.2f", TimerBar.Timers[i].name,
+					TimerBar.Timers[i].endTime - TimerBar.Timers[i].startTime);
+#ifdef FRAMETIME
+			printf(" | FrameTime=%.2f", FrameEndTime - FrameInitTime);
+#endif
+			printf("\n");
+			fflush(stdout);
+		}
+	}
+#endif
 	CFont::SetBackgroundOff();
 	CFont::SetBackgroundColor(CRGBA(0, 0, 0, 128));
 	CFont::SetScale(0.48f, 1.12f);

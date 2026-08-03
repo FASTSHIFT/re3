@@ -89,7 +89,11 @@ float FramesPerSecond = 30.0f;
 bool gbPrintShite = false;
 bool gbModelViewer;
 #ifdef TIMEBARS
+#ifdef TIMEBARS_LOG
+bool gbShowTimebars = true;	// force on so per-stage timings are logged from the start
+#else
 bool gbShowTimebars;
+#endif
 #endif
 #ifdef DRAW_GAME_VERSION_TEXT
 bool gbDrawVersionText; // Our addition, we think it was always enabled on !MASTER builds
