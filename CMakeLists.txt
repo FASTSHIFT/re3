@@ -50,6 +50,13 @@ if(${PROJECT}_RPI)
     message(STATUS "${PROJECT}_RPI enabled: preferring hardware GLES2 context")
 endif()
 
+# On-screen FPS + per-stage timing (see docs/03). Debug/optimization aid.
+option(${PROJECT}_TIMEBARS "Show on-screen FPS and per-stage frame timers" OFF)
+if(${PROJECT}_TIMEBARS)
+    add_compile_definitions(TIMEBARS)
+    message(STATUS "${PROJECT}_TIMEBARS enabled: on-screen FPS + timers")
+endif()
+
 if(${PROJECT}_VENDORED_LIBRW)
     add_subdirectory(vendor/librw)
 else()
