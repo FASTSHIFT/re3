@@ -32,6 +32,9 @@ set(${PROJECT}_AUDIO "OAL" CACHE STRING "Audio")
 option(${PROJECT}_INSTALL "Enable installation of ${EXECUTABLE} + gamefiles" OFF)
 option(${PROJECT}_WITH_OPUS "Build ${EXECUTABLE} with opus support" OFF)
 option(${PROJECT}_WITH_LIBSNDFILE "Build ${EXECUTABLE} with libsndfile (instead of internal decoder)" OFF)
+# Raspberry Pi (VideoCore IV) target: prefer hardware GLES2 context over software desktop GL.
+# Without this, XWayland/llvmpipe hands librw a software GL 2.1 context first.
+option(${PROJECT}_RPI "Optimize for Raspberry Pi (VideoCore IV / GLES2)" OFF)
 
 set_property(CACHE ${PROJECT}_AUDIO PROPERTY STRINGS ${${PROJECT}_AUDIOS})
 message(STATUS "${PROJECT}_AUDIO = ${${PROJECT}_AUDIO} (choices=${${PROJECT}_AUDIOS})")
@@ -41,6 +44,12 @@ if(NOT ${PROJECT}_AUDIO IN_LIST ${PROJECT}_AUDIOS)
 endif()
 
 option(${PROJECT}_VENDORED_LIBRW "Use vendored librw" ON)
+if(${PROJECT}_RPI)
+    # Applies to librw (gl3device.cpp) and re3 alike: prefer hardware GLES2 context.
+    add_compile_definitions(RPI_PREFER_GLES)
+    message(STATUS "${PROJECT}_RPI enabled: preferring hardware GLES2 context")
+endif()
+
 if(${PROJECT}_VENDORED_LIBRW)
     add_subdirectory(vendor/librw)
 else()

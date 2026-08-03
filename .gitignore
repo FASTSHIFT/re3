@@ -361,3 +361,9 @@ codewarrior/Release/
 codewarrior/Debug/
 
 src/extras/GitSHA1.cpp
+
+# Raspberry Pi cross-compilation (performance optimization fork)
+build-rpi/
+rpi-sysroot/
+# Local convenience symlink to GTA3 assets
+gta3_assets
