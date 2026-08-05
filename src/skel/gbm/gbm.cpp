@@ -1,4 +1,7 @@
-#if defined RW_GL3 && !defined LIBRW_SDL2 && !defined LIBRW_GBM
+// GBM/EGL surfaceless skeleton: no window system, renders offscreen and reads
+// back to /dev/fb0 (later SPI). Derived from glfw.cpp; GLFW-specific bits
+// replaced with GBM / no-op equivalents. See docs/07, docs/08.
+#if defined RW_GL3 && defined LIBRW_GBM
 
 #ifdef _WIN32
 #include <shlobj.h>
