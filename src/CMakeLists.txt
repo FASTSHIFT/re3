@@ -147,12 +147,27 @@ if(LIBRW_PLATFORM_GL3 AND LIBRW_GL3_GFXLIB STREQUAL "GLFW")
 endif()
 
 # GBM/EGL surfaceless backend (no window system): src/skel/gbm/gbm.cpp reads
-# back the framebuffer with glReadPixels and blits to /dev/fb0 (later SPI).
-# No glfw3 is needed here (that find_package lives in librw and is only invoked
-# for the GLFW gfxlib). We only need GLESv2 for the readback call; librw already
-# propagates gbm + EGL as PUBLIC link deps.
-if(LIBRW_PLATFORM_GL3 AND LIBRW_GL3_GFXLIB STREQUAL "GBM")
+# back the framebuffer with glReadPixels and presents to /dev/fb0 or SPI.
+# We only need GLESv2 for the readback call; librw already propagates gbm + EGL
+# as PUBLIC link deps.
+# NOTE: gate on the CACHE variable LIBRW_GL3_GFXLIB (visible here). The
+# LIBRW_PLATFORM_GL3 marker is a plain variable set in librw's own directory
+# scope and is NOT visible in this subdirectory, so we must not rely on it.
+if(LIBRW_GL3_GFXLIB STREQUAL "GBM")
 	target_link_libraries(${EXECUTABLE} PRIVATE GLESv2 EGL gbm)
+
+	# ST7789 SPI output backend: compile the driver straight into re3 and let
+	# gbm.cpp push frames via st7789_flush (see docs/06). The GLOB_RECURSE above
+	# only scans src/, so add the driver sources explicitly.
+	if(RE3_OUTPUT_SPI)
+		target_sources(${EXECUTABLE} PRIVATE
+			${PROJECT_SOURCE_DIR}/drivers/st7789/st7789.c
+			${PROJECT_SOURCE_DIR}/drivers/st7789/pi_gpio.c
+		)
+		target_include_directories(${EXECUTABLE} PRIVATE
+			${PROJECT_SOURCE_DIR}/drivers/st7789
+		)
+	endif()
 endif()
 
 set_target_properties(${EXECUTABLE}

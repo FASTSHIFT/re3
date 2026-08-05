@@ -71,6 +71,15 @@ if(${PROJECT}_RPI_LEAN_FX)
     message(STATUS "${PROJECT}_RPI_LEAN_FX enabled: lean post-processing")
 endif()
 
+# Output backend for the GBM (headless) skeleton: push frames to an ST7789 SPI
+# panel (drivers/st7789) instead of /dev/fb0. Only meaningful with the GBM
+# gfxlib. See docs/06, docs/08.
+option(${PROJECT}_OUTPUT_SPI "GBM skeleton pushes frames to an ST7789 SPI panel instead of /dev/fb0" OFF)
+if(${PROJECT}_OUTPUT_SPI)
+    add_compile_definitions(RE3_OUTPUT_SPI)
+    message(STATUS "${PROJECT}_OUTPUT_SPI enabled: ST7789 SPI output (drivers/st7789)")
+endif()
+
 if(${PROJECT}_VENDORED_LIBRW)
     add_subdirectory(vendor/librw)
 else()

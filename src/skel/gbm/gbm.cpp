@@ -56,14 +56,18 @@ long _dwOperatingSystemVersion;
 #include "MemoryMgr.h"
 
 // GBM/EGL surfaceless output: no window system. We read back the default
-// framebuffer with glReadPixels and blit it to /dev/fb0 (later SPI).
-// See docs/07, docs/08. GLES2 gives us glReadPixels et al.; this TU doesn't
-// pull in librw's glad, so there's no symbol clash.
+// framebuffer with glReadPixels and present it either to /dev/fb0 (default,
+// debug) or to an ST7789 SPI panel (RE3_OUTPUT_SPI, see docs/06/07/08).
+// GLES2 gives us glReadPixels et al.; this TU doesn't pull in librw's glad,
+// so there's no symbol clash.
 #include <GLES2/gl2.h>
 #include <fcntl.h>
 #include <sys/mman.h>
 #include <sys/ioctl.h>
 #include <linux/fb.h>
+#ifdef RE3_OUTPUT_SPI
+#include "st7789.h"
+#endif
 
 #define MAX_SUBSYSTEMS		(16)
 
@@ -193,23 +197,45 @@ psCameraBeginUpdate(RwCamera *camera)
 
 /*
  *****************************************************************************
- * fb0 output sink: read back the rendered default framebuffer and blit it to
- * /dev/fb0. This is the debug/verification path (docs/07); SPI output comes
- * later as a separate sink. Absent /dev/fb0 (no HDMI) is handled gracefully:
- * we still call glReadPixels so the render pipeline is exercised.
+ * Output sink for the headless GBM skeleton. Each frame: read the rendered
+ * scene back with glReadPixels (RGBA8, bottom-up), then present it to either
+ * /dev/fb0 (default, HDMI debug path, docs/07) or an ST7789 SPI panel
+ * (RE3_OUTPUT_SPI, docs/06). When the render resolution differs from the
+ * output resolution we nearest-neighbor scale; the GL image is flipped
+ * vertically to top-down while sampling.
  */
+static uint8		*gReadbackRGBA = nil;	// glReadPixels dst (RGBA8)
+static uint16		*gOutRGB565 = nil;		// output-sized RGB565 scratch
+static int			gReadbackW = 0, gReadbackH = 0;
+static int			gOutW = 0, gOutH = 0;	// output/panel resolution
+
+#ifdef RE3_OUTPUT_SPI
+static st7789_t		*gSpiDev = nil;
+#else
 static int			gFbFd = -1;
 static uint8		*gFbMem = nil;
 static size_t		gFbSize = 0;
 static struct fb_var_screeninfo gFbVar;
 static struct fb_fix_screeninfo gFbFix;
-static uint8		*gReadbackRGBA = nil;	// glReadPixels dst (RGBA8)
-static uint16		*gReadbackRGB565 = nil;	// converted for 16bpp fb
-static int			gReadbackW = 0, gReadbackH = 0;
+#endif
 
 static void
-_psOpenFramebuffer(void)
+_psOpenOutput(void)
 {
+#ifdef RE3_OUTPUT_SPI
+	// ST7789 SPI panel: 320x240 landscape by default (see drivers/st7789).
+	st7789_config_t cfg;
+	st7789_config_default(&cfg);
+	st7789_tune_system(65536);	// performance governor: key perf knob (docs/06)
+	gSpiDev = st7789_open(&cfg);
+	if (gSpiDev == nil) {
+		printf("ERROR: st7789_open failed (SPI panel); no output\n");
+		return;
+	}
+	gOutW = st7789_get_width(gSpiDev);
+	gOutH = st7789_get_height(gSpiDev);
+	printf("ST7789 SPI panel %dx%d\n", gOutW, gOutH);
+#else
 	gFbFd = open("/dev/fb0", O_RDWR);
 	if (gFbFd < 0) {
 		printf("WARN: /dev/fb0 unavailable (no HDMI?) - render+readback only\n");
@@ -232,11 +258,18 @@ _psOpenFramebuffer(void)
 		close(gFbFd);
 		gFbFd = -1;
 	}
+	// fb0 path presents at the render resolution, centered.
+	gOutW = RsGlobal.maximumWidth;
+	gOutH = RsGlobal.maximumHeight;
+#endif
 }
 
 static void
-_psCloseFramebuffer(void)
+_psCloseOutput(void)
 {
+#ifdef RE3_OUTPUT_SPI
+	if (gSpiDev != nil) { st7789_close(gSpiDev); gSpiDev = nil; }
+#else
 	if (gFbMem != nil && gFbSize != 0)
 		munmap(gFbMem, gFbSize);
 	if (gFbFd >= 0)
@@ -244,35 +277,56 @@ _psCloseFramebuffer(void)
 	gFbMem = nil;
 	gFbFd = -1;
 	gFbSize = 0;
+#endif
 	if (gReadbackRGBA != nil) { free(gReadbackRGBA); gReadbackRGBA = nil; }
-	if (gReadbackRGB565 != nil) { free(gReadbackRGB565); gReadbackRGB565 = nil; }
+	if (gOutRGB565 != nil) { free(gOutRGB565); gOutRGB565 = nil; }
 	gReadbackW = gReadbackH = 0;
 }
 
 static void
-_psPresentToFramebuffer(void)
+_psPresent(void)
 {
 	int w = RsGlobal.maximumWidth;
 	int h = RsGlobal.maximumHeight;
 	if (w <= 0 || h <= 0)
 		return;
 
-	// (re)allocate readback buffers if the render size changed
 	if (w != gReadbackW || h != gReadbackH || gReadbackRGBA == nil) {
 		if (gReadbackRGBA != nil) free(gReadbackRGBA);
-		if (gReadbackRGB565 != nil) free(gReadbackRGB565);
 		gReadbackRGBA = (uint8 *)malloc(w * h * 4);
-		gReadbackRGB565 = (uint16 *)malloc(w * h * 2);
 		gReadbackW = w;
 		gReadbackH = h;
 	}
 	if (gReadbackRGBA == nil)
 		return;
 
-	// Read back the default framebuffer (librw's CAMERA raster uses fbo 0 in
-	// GBM mode, so the scene is here). GL origin is bottom-left.
+	// Read back the rendered scene. librw's GBM camera renders into a
+	// texture-backed FBO which showRaster left bound; GL origin is bottom-left.
 	glReadPixels(0, 0, w, h, GL_RGBA, GL_UNSIGNED_BYTE, gReadbackRGBA);
 
+#ifdef RE3_OUTPUT_SPI
+	if (gSpiDev == nil || gOutW <= 0 || gOutH <= 0)
+		return;
+
+	if (gOutRGB565 == nil)
+		gOutRGB565 = (uint16 *)malloc(gOutW * gOutH * 2);
+	if (gOutRGB565 == nil)
+		return;
+
+	// Nearest-neighbor scale render(w x h, bottom-up) -> panel(gOutW x gOutH,
+	// top-down), converting to RGB565 (little-endian, matches driver default).
+	for (int py = 0; py < gOutH; py++) {
+		int ry = (py * h) / gOutH;			// top-down render row
+		const uint8 *srcRow = gReadbackRGBA + (h - 1 - ry) * w * 4;	// flip
+		uint16 *dstRow = gOutRGB565 + py * gOutW;
+		for (int px = 0; px < gOutW; px++) {
+			int rx = (px * w) / gOutW;
+			const uint8 *s = srcRow + rx * 4;
+			dstRow[px] = ((s[0] & 0xF8) << 8) | ((s[1] & 0xFC) << 3) | (s[2] >> 3);
+		}
+	}
+	st7789_flush(gSpiDev, gOutRGB565);
+#else
 	if (gFbMem == nil)
 		return;	// no display; readback still exercised the pipeline
 
@@ -299,6 +353,7 @@ _psPresentToFramebuffer(void)
 				dst[x] = (srcRow[x * 4 + 0] << 16) | (srcRow[x * 4 + 1] << 8) | srcRow[x * 4 + 2];
 		}
 	}
+#endif
 }
 
 /*
@@ -308,10 +363,10 @@ void
 psCameraShowRaster(RwCamera *camera)
 {
 	// librw's GBM showRaster is just glFinish (no swap); the actual present is
-	// the readback+blit below.
+	// the readback + output below.
 	RwCameraShowRaster(camera, PSGLOBAL(window), rwRASTERFLIPDONTWAIT);
 
-	_psPresentToFramebuffer();
+	_psPresent();
 
 	return;
 }
@@ -689,7 +744,7 @@ psInitialize(void)
 void
 psTerminate(void)
 {
-	_psCloseFramebuffer();
+	_psCloseOutput();
 	return;
 }
 
@@ -1041,9 +1096,9 @@ long _InputInitialiseMouse()
 
 void psPostRWinit(void)
 {
-	// No window system: no callbacks, no window resize. Open the framebuffer
-	// output sink and clear pads.
-	_psOpenFramebuffer();
+	// No window system: no callbacks, no window resize. Open the output sink
+	// (fb0 or SPI panel) and clear pads.
+	_psOpenOutput();
 
 	_InputInitialiseJoys();
 	_InputInitialiseMouse();
