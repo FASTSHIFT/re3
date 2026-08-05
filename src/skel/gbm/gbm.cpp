@@ -67,6 +67,7 @@ long _dwOperatingSystemVersion;
 #include <linux/fb.h>
 #ifdef RE3_OUTPUT_SPI
 #include "st7789.h"
+#include "pi_gpio.h"
 #endif
 
 #define MAX_SUBSYSTEMS		(16)
@@ -211,6 +212,7 @@ static int			gOutW = 0, gOutH = 0;	// output/panel resolution
 
 #ifdef RE3_OUTPUT_SPI
 static st7789_t		*gSpiDev = nil;
+static int			gSpiSwapRB = 0;	// swap R<->B (BGR panels), set from env
 #else
 static int			gFbFd = -1;
 static uint8		*gFbMem = nil;
@@ -226,6 +228,20 @@ _psOpenOutput(void)
 	// ST7789 SPI panel: 320x240 landscape by default (see drivers/st7789).
 	st7789_config_t cfg;
 	st7789_config_default(&cfg);
+	// Color debug knobs via env (avoids reflashing to try combinations):
+	//   RE3_SPI_INVERT=0/1   panel color inversion (INVON/INVOFF)
+	//   RE3_SPI_ENDIAN=0/1   RGB565 byte order sent to panel (1=little)
+	//   RE3_SPI_BGR=0/1      swap R<->B when packing (BGR panels); read in _psPresent
+	//   RE3_SPI_ROT=0..3     rotation
+	//   RE3_SPI_HZ=<hz>      SPI clock
+	{
+		const char *e;
+		if ((e = getenv("RE3_SPI_INVERT")) != nil) cfg.invert = atoi(e);
+		if ((e = getenv("RE3_SPI_ENDIAN")) != nil) cfg.little_endian = atoi(e);
+		if ((e = getenv("RE3_SPI_ROT"))    != nil) cfg.rotation = (st7789_rotation_t)atoi(e);
+		if ((e = getenv("RE3_SPI_HZ"))     != nil) cfg.spi_hz = (uint32_t)strtoul(e, nil, 10);
+		if ((e = getenv("RE3_SPI_BGR"))    != nil) gSpiSwapRB = atoi(e);
+	}
 	st7789_tune_system(65536);	// performance governor: key perf knob (docs/06)
 	gSpiDev = st7789_open(&cfg);
 	if (gSpiDev == nil) {
@@ -314,7 +330,7 @@ _psPresent(void)
 		return;
 
 	// Nearest-neighbor scale render(w x h, bottom-up) -> panel(gOutW x gOutH,
-	// top-down), converting to RGB565 (little-endian, matches driver default).
+	// top-down), converting RGBA8 to RGB565. gSpiSwapRB handles BGR panels.
 	for (int py = 0; py < gOutH; py++) {
 		int ry = (py * h) / gOutH;			// top-down render row
 		const uint8 *srcRow = gReadbackRGBA + (h - 1 - ry) * w * 4;	// flip
@@ -322,7 +338,9 @@ _psPresent(void)
 		for (int px = 0; px < gOutW; px++) {
 			int rx = (px * w) / gOutW;
 			const uint8 *s = srcRow + rx * 4;
-			dstRow[px] = ((s[0] & 0xF8) << 8) | ((s[1] & 0xFC) << 3) | (s[2] >> 3);
+			uint8 r = s[0], g = s[1], b = s[2];
+			if (gSpiSwapRB) { uint8 t = r; r = b; b = t; }
+			dstRow[px] = (uint16)(((r & 0xF8) << 8) | ((g & 0xFC) << 3) | (b >> 3));
 		}
 	}
 	st7789_flush(gSpiDev, gOutRGB565);
@@ -1094,6 +1112,10 @@ long _InputInitialiseMouse()
 	return 0;
 }
 
+#ifdef RE3_OUTPUT_SPI
+static void _psInitGpioInput(void);	// defined near CapturePad (GPIO input)
+#endif
+
 void psPostRWinit(void)
 {
 	// No window system: no callbacks, no window resize. Open the output sink
@@ -1102,6 +1124,9 @@ void psPostRWinit(void)
 
 	_InputInitialiseJoys();
 	_InputInitialiseMouse();
+#ifdef RE3_OUTPUT_SPI
+	_psInitGpioInput();
+#endif
 
 	// Make sure all keys are released
 	CPad::GetPad(0)->Clear(true);
@@ -2451,12 +2476,96 @@ main(int argc, char *argv[])
 RwV2d leftStickPos;
 RwV2d rightStickPos;
 
-// GBM: no GLFW joystick. Pad input is empty for the first milestone; a GPIO
-// input source will later write CPad::PCTempJoyState here (docs/08 §5, method
-// A). CPad::UpdatePads still calls this every frame, so it must exist.
+#ifdef RE3_OUTPUT_SPI
+// GPIO physical-button input (docs/08 section 5, method A): treat the buttons
+// as a virtual gamepad and write CPad::PCTempJoyState directly. CPad::UpdatePads
+// aggregates PCTempJoyState into NewState (see Pad.cpp XInput path), so the
+// game logic and ControllerConfig stay untouched.
+//
+// Pins (BCM) and defaults follow the reference handheld (lv_gba_emu rpi port);
+// each is overridable via env (RE3_KEY_UP=.., etc.) for different wiring.
+// Buttons are wired to GND with internal pull-up: unpressed reads 1, pressed 0.
+struct GpioKey { const char *env; int pin; };
+enum {
+	GK_UP, GK_DOWN, GK_LEFT, GK_RIGHT,
+	GK_A, GK_B, GK_SELECT, GK_START, GK_L, GK_R,
+	GK_COUNT
+};
+static GpioKey gGpioKeys[GK_COUNT] = {
+	{ "RE3_KEY_UP",     12 },
+	{ "RE3_KEY_DOWN",   20 },
+	{ "RE3_KEY_LEFT",   21 },
+	{ "RE3_KEY_RIGHT",  13 },
+	{ "RE3_KEY_A",      23 },	// Cross  (accelerate / enter / confirm)
+	{ "RE3_KEY_B",       4 },	// Circle (fire / cancel)
+	{ "RE3_KEY_SELECT", 16 },	// Select (change camera)
+	{ "RE3_KEY_START",  26 },	// Start  (pause / menu)
+	{ "RE3_KEY_L",       5 },	// L1     (look left / target)
+	{ "RE3_KEY_R",       6 }	// R1     (look right / target)
+};
+static bool gGpioReady = false;
+
+static void _psInitGpioInput(void)
+{
+	if (pi_gpio_init() < 0) {
+		printf("WARN: GPIO input unavailable (pi_gpio_init failed)\n");
+		return;
+	}
+	for (int i = 0; i < GK_COUNT; i++) {
+		const char *e = getenv(gGpioKeys[i].env);
+		if (e != nil)
+			gGpioKeys[i].pin = atoi(e);
+		pi_gpio_set_mode((uint8)gGpioKeys[i].pin, PI_GPIO_INPUT);
+		pi_gpio_set_pull((uint8)gGpioKeys[i].pin, PI_GPIO_PULL_UP);
+	}
+	gGpioReady = true;
+	printf("GPIO input ready (UP=%d DOWN=%d LEFT=%d RIGHT=%d A=%d B=%d SELECT=%d START=%d L=%d R=%d)\n",
+		gGpioKeys[GK_UP].pin, gGpioKeys[GK_DOWN].pin, gGpioKeys[GK_LEFT].pin, gGpioKeys[GK_RIGHT].pin,
+		gGpioKeys[GK_A].pin, gGpioKeys[GK_B].pin, gGpioKeys[GK_SELECT].pin, gGpioKeys[GK_START].pin,
+		gGpioKeys[GK_L].pin, gGpioKeys[GK_R].pin);
+}
+
+// active-low: pressed == pin reads 0
+static bool _gpioPressed(int idx)
+{
+	return pi_gpio_get_value((uint8)gGpioKeys[idx].pin) == 0;
+}
+
+void CapturePad(RwInt32 padID)
+{
+	if (padID != 0 || !gGpioReady)
+		return;
+
+	CPad *pad = CPad::GetPad(0);
+	CControllerState &s = pad->PCTempJoyState;
+	s.Clear();
+
+	bool up = _gpioPressed(GK_UP);
+	bool down = _gpioPressed(GK_DOWN);
+	bool left = _gpioPressed(GK_LEFT);
+	bool right = _gpioPressed(GK_RIGHT);
+
+	// D-pad (menu navigation) + left stick (in-game movement). Full deflection
+	// on the stick; game applies its own deadzone (>0.3 of 128).
+	s.DPadUp    = up    ? 255 : 0;
+	s.DPadDown  = down  ? 255 : 0;
+	s.DPadLeft  = left  ? 255 : 0;
+	s.DPadRight = right ? 255 : 0;
+	s.LeftStickX = (int16)((right ? 128 : 0) - (left ? 128 : 0));
+	s.LeftStickY = (int16)((down  ? 128 : 0) - (up   ? 128 : 0));
+
+	s.Cross    = _gpioPressed(GK_A)      ? 255 : 0;
+	s.Circle   = _gpioPressed(GK_B)      ? 255 : 0;
+	s.Select   = _gpioPressed(GK_SELECT) ? 255 : 0;
+	s.Start    = _gpioPressed(GK_START)  ? 255 : 0;
+	s.LeftShoulder1  = _gpioPressed(GK_L) ? 255 : 0;
+	s.RightShoulder1 = _gpioPressed(GK_R) ? 255 : 0;
+}
+#else
+// GBM without SPI panel: no input source wired yet.
 void CapturePad(RwInt32 padID)
 {
 	(void)padID;
-	// no input yet
 }
+#endif
 #endif
