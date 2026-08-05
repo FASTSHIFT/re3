@@ -77,6 +77,57 @@ psGlobalType;
 
 void CapturePad(RwInt32 padID);
 void joysChangeCB(int jid, int event);
+
+#ifdef LIBRW_GBM
+// GBM has no window system, so there's no GLFW. The platform-independent game
+// code (Pad.cpp, Frontend.cpp, ControllerConfig.cpp, MenuScreensCustom.cpp)
+// still references GLFW symbols directly under plain #ifdef RW_GL3. To keep
+// those files untouched, provide a minimal GLFW compatibility shim: constants
+// (values match GLFW so the gamepad button map stays correct) and no-op input
+// stubs. Real input (GPIO) is a later task (docs/08 §5); for now input is empty.
+
+// mouse buttons
+#define GLFW_MOUSE_BUTTON_LEFT		0
+#define GLFW_MOUSE_BUTTON_RIGHT		1
+#define GLFW_MOUSE_BUTTON_MIDDLE	2
+#define GLFW_MOUSE_BUTTON_4			3
+#define GLFW_MOUSE_BUTTON_5			4
+
+// cursor input mode
+#define GLFW_CURSOR					0x00033001
+#define GLFW_CURSOR_NORMAL			0x00034001
+#define GLFW_CURSOR_HIDDEN			0x00034002
+#define GLFW_CURSOR_DISABLED		0x00034003
+
+// joysticks
+#define GLFW_JOYSTICK_LAST			15
+
+// gamepad buttons (GLFW values; MapIdToButtonId depends on these)
+#define GLFW_GAMEPAD_BUTTON_A				0
+#define GLFW_GAMEPAD_BUTTON_B				1
+#define GLFW_GAMEPAD_BUTTON_X				2
+#define GLFW_GAMEPAD_BUTTON_Y				3
+#define GLFW_GAMEPAD_BUTTON_LEFT_BUMPER		4
+#define GLFW_GAMEPAD_BUTTON_RIGHT_BUMPER	5
+#define GLFW_GAMEPAD_BUTTON_BACK			6
+#define GLFW_GAMEPAD_BUTTON_START			7
+#define GLFW_GAMEPAD_BUTTON_GUIDE			8
+#define GLFW_GAMEPAD_BUTTON_LEFT_THUMB		9
+#define GLFW_GAMEPAD_BUTTON_RIGHT_THUMB		10
+#define GLFW_GAMEPAD_BUTTON_DPAD_UP			11
+#define GLFW_GAMEPAD_BUTTON_DPAD_RIGHT		12
+#define GLFW_GAMEPAD_BUTTON_DPAD_DOWN		13
+#define GLFW_GAMEPAD_BUTTON_DPAD_LEFT		14
+
+// no-op input stubs (window arg is void* under GBM)
+inline void glfwGetCursorPos(void *, double *xpos, double *ypos) { if (xpos) *xpos = 0.0; if (ypos) *ypos = 0.0; }
+inline int glfwGetMouseButton(void *, int) { return 0; }
+inline void glfwSetCursorPos(void *, double, double) {}
+inline void glfwSetInputMode(void *, int, int) {}
+inline int glfwJoystickPresent(int) { return 0; }
+inline const unsigned char *glfwGetJoystickButtons(int, int *count) { if (count) *count = 0; return 0; }
+inline const char *glfwGetJoystickName(int) { return 0; }
+#endif
 #endif
 
 #ifdef DETECT_JOYSTICK_MENU

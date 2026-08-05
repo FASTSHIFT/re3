@@ -146,6 +146,15 @@ if(LIBRW_PLATFORM_GL3 AND LIBRW_GL3_GFXLIB STREQUAL "GLFW")
 	endif (GLFW_HAS_X11)
 endif()
 
+# GBM/EGL surfaceless backend (no window system): src/skel/gbm/gbm.cpp reads
+# back the framebuffer with glReadPixels and blits to /dev/fb0 (later SPI).
+# No glfw3 is needed here (that find_package lives in librw and is only invoked
+# for the GLFW gfxlib). We only need GLESv2 for the readback call; librw already
+# propagates gbm + EGL as PUBLIC link deps.
+if(LIBRW_PLATFORM_GL3 AND LIBRW_GL3_GFXLIB STREQUAL "GBM")
+	target_link_libraries(${EXECUTABLE} PRIVATE GLESv2 EGL gbm)
+endif()
+
 set_target_properties(${EXECUTABLE}
     PROPERTIES
         C_STANDARD 11

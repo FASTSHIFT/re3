@@ -55,18 +55,15 @@ long _dwOperatingSystemVersion;
 #include "Font.h"
 #include "MemoryMgr.h"
 
-// This is defined on project-level, via premake5 or cmake
-#ifdef GET_KEYBOARD_INPUT_FROM_X11
-#include <X11/Xlib.h>
-#include <X11/XKBlib.h>
-#define GLFW_EXPOSE_NATIVE_X11
-#include <GLFW/glfw3native.h>
-#endif
-
-#ifdef _WIN32
-#define GLFW_EXPOSE_NATIVE_WIN32
-#include <GLFW/glfw3native.h>
-#endif
+// GBM/EGL surfaceless output: no window system. We read back the default
+// framebuffer with glReadPixels and blit it to /dev/fb0 (later SPI).
+// See docs/07, docs/08. GLES2 gives us glReadPixels et al.; this TU doesn't
+// pull in librw's glad, so there's no symbol clash.
+#include <GLES2/gl2.h>
+#include <fcntl.h>
+#include <sys/mman.h>
+#include <sys/ioctl.h>
+#include <linux/fb.h>
 
 #define MAX_SUBSYSTEMS		(16)
 
@@ -196,14 +193,125 @@ psCameraBeginUpdate(RwCamera *camera)
 
 /*
  *****************************************************************************
+ * fb0 output sink: read back the rendered default framebuffer and blit it to
+ * /dev/fb0. This is the debug/verification path (docs/07); SPI output comes
+ * later as a separate sink. Absent /dev/fb0 (no HDMI) is handled gracefully:
+ * we still call glReadPixels so the render pipeline is exercised.
+ */
+static int			gFbFd = -1;
+static uint8		*gFbMem = nil;
+static size_t		gFbSize = 0;
+static struct fb_var_screeninfo gFbVar;
+static struct fb_fix_screeninfo gFbFix;
+static uint8		*gReadbackRGBA = nil;	// glReadPixels dst (RGBA8)
+static uint16		*gReadbackRGB565 = nil;	// converted for 16bpp fb
+static int			gReadbackW = 0, gReadbackH = 0;
+
+static void
+_psOpenFramebuffer(void)
+{
+	gFbFd = open("/dev/fb0", O_RDWR);
+	if (gFbFd < 0) {
+		printf("WARN: /dev/fb0 unavailable (no HDMI?) - render+readback only\n");
+		return;
+	}
+	if (ioctl(gFbFd, FBIOGET_VSCREENINFO, &gFbVar) != 0 ||
+		ioctl(gFbFd, FBIOGET_FSCREENINFO, &gFbFix) != 0) {
+		printf("WARN: fb0 ioctl failed\n");
+		close(gFbFd);
+		gFbFd = -1;
+		return;
+	}
+	printf("fb0: %dx%d %dbpp line=%d\n", gFbVar.xres, gFbVar.yres,
+		gFbVar.bits_per_pixel, gFbFix.line_length);
+	gFbSize = gFbFix.line_length * gFbVar.yres;
+	gFbMem = (uint8 *)mmap(nil, gFbSize, PROT_READ | PROT_WRITE, MAP_SHARED, gFbFd, 0);
+	if (gFbMem == MAP_FAILED) {
+		printf("WARN: mmap fb0 failed\n");
+		gFbMem = nil;
+		close(gFbFd);
+		gFbFd = -1;
+	}
+}
+
+static void
+_psCloseFramebuffer(void)
+{
+	if (gFbMem != nil && gFbSize != 0)
+		munmap(gFbMem, gFbSize);
+	if (gFbFd >= 0)
+		close(gFbFd);
+	gFbMem = nil;
+	gFbFd = -1;
+	gFbSize = 0;
+	if (gReadbackRGBA != nil) { free(gReadbackRGBA); gReadbackRGBA = nil; }
+	if (gReadbackRGB565 != nil) { free(gReadbackRGB565); gReadbackRGB565 = nil; }
+	gReadbackW = gReadbackH = 0;
+}
+
+static void
+_psPresentToFramebuffer(void)
+{
+	int w = RsGlobal.maximumWidth;
+	int h = RsGlobal.maximumHeight;
+	if (w <= 0 || h <= 0)
+		return;
+
+	// (re)allocate readback buffers if the render size changed
+	if (w != gReadbackW || h != gReadbackH || gReadbackRGBA == nil) {
+		if (gReadbackRGBA != nil) free(gReadbackRGBA);
+		if (gReadbackRGB565 != nil) free(gReadbackRGB565);
+		gReadbackRGBA = (uint8 *)malloc(w * h * 4);
+		gReadbackRGB565 = (uint16 *)malloc(w * h * 2);
+		gReadbackW = w;
+		gReadbackH = h;
+	}
+	if (gReadbackRGBA == nil)
+		return;
+
+	// Read back the default framebuffer (librw's CAMERA raster uses fbo 0 in
+	// GBM mode, so the scene is here). GL origin is bottom-left.
+	glReadPixels(0, 0, w, h, GL_RGBA, GL_UNSIGNED_BYTE, gReadbackRGBA);
+
+	if (gFbMem == nil)
+		return;	// no display; readback still exercised the pipeline
+
+	int ox = ((int)gFbVar.xres - w) / 2;
+	int oy = ((int)gFbVar.yres - h) / 2;
+	if (ox < 0) ox = 0;
+	if (oy < 0) oy = 0;
+
+	// GL image is bottom-up; flip vertically while blitting to fb0 (top-down).
+	if (gFbVar.bits_per_pixel == 16) {
+		for (int y = 0; y < h; y++) {
+			const uint8 *srcRow = gReadbackRGBA + (h - 1 - y) * w * 4;
+			uint16 *dst = (uint16 *)(gFbMem + (oy + y) * gFbFix.line_length + ox * 2);
+			for (int x = 0; x < w; x++) {
+				uint8 r = srcRow[x * 4 + 0], g = srcRow[x * 4 + 1], b = srcRow[x * 4 + 2];
+				dst[x] = ((r & 0xF8) << 8) | ((g & 0xFC) << 3) | (b >> 3);
+			}
+		}
+	} else if (gFbVar.bits_per_pixel == 32) {
+		for (int y = 0; y < h; y++) {
+			const uint8 *srcRow = gReadbackRGBA + (h - 1 - y) * w * 4;
+			uint32 *dst = (uint32 *)(gFbMem + (oy + y) * gFbFix.line_length) + ox;
+			for (int x = 0; x < w; x++)
+				dst[x] = (srcRow[x * 4 + 0] << 16) | (srcRow[x * 4 + 1] << 8) | srcRow[x * 4 + 2];
+		}
+	}
+}
+
+/*
+ *****************************************************************************
  */
 void
 psCameraShowRaster(RwCamera *camera)
 {
-	if (CMenuManager::m_PrefsVsync)
-		RwCameraShowRaster(camera, PSGLOBAL(window), rwRASTERFLIPWAITVSYNC);
-	else
-		RwCameraShowRaster(camera, PSGLOBAL(window), rwRASTERFLIPDONTWAIT);
+	// librw's GBM showRaster is just glFinish (no swap); the actual present is
+	// the readback+blit below.
+	RwCameraShowRaster(camera, PSGLOBAL(window), rwRASTERFLIPDONTWAIT);
+
+	_psPresentToFramebuffer();
 
 	return;
 }
@@ -275,8 +383,7 @@ psTimer(void)
 void
 psMouseSetPos(RwV2d *pos)
 {
-	glfwSetCursorPos(PSGLOBAL(window), pos->x, pos->y);
-	
+	// No window system / no mouse cursor under GBM.
 	PSGLOBAL(lastMousePos.x) = (RwInt32)pos->x;
 
 	PSGLOBAL(lastMousePos.y) = (RwInt32)pos->y;
@@ -582,6 +689,7 @@ psInitialize(void)
 void
 psTerminate(void)
 {
+	_psCloseFramebuffer();
 	return;
 }
 
@@ -825,42 +933,19 @@ psSelectDevice()
 		if(FrontEndMenuManager.m_nPrefsWidth == 0 ||
 		   FrontEndMenuManager.m_nPrefsHeight == 0 ||
 		   FrontEndMenuManager.m_nPrefsDepth == 0){
-			// Defaults if nothing specified
-			const GLFWvidmode *mode = glfwGetVideoMode(glfwGetPrimaryMonitor());
-			FrontEndMenuManager.m_nPrefsWidth = mode->width;
-			FrontEndMenuManager.m_nPrefsHeight = mode->height;
+			// Defaults if nothing specified. GBM has a single offscreen mode
+			// (the render resolution), so fall back to RsGlobal defaults.
+			FrontEndMenuManager.m_nPrefsWidth = RsGlobal.maximumWidth;
+			FrontEndMenuManager.m_nPrefsHeight = RsGlobal.maximumHeight;
 			FrontEndMenuManager.m_nPrefsDepth = 32;
 			FrontEndMenuManager.m_nPrefsWindowed = 0;
 		}
 
-		// Find the videomode that best fits what we got from the settings file
-		RwInt32 bestFsMode = -1;
-		RwInt32 bestWidth = -1;
-		RwInt32 bestHeight = -1;
-		RwInt32 bestDepth = -1;
-		for(GcurSelVM = 0; GcurSelVM < RwEngineGetNumVideoModes(); GcurSelVM++){
-			RwEngineGetVideoModeInfo(&vm, GcurSelVM);
-
-			if (!(vm.flags & rwVIDEOMODEEXCLUSIVE)){
-				bestWndMode = GcurSelVM;
-			} else {
-				// try the largest one that isn't larger than what we wanted
-				if(vm.width >= bestWidth && vm.width <= FrontEndMenuManager.m_nPrefsWidth &&
-				   vm.height >= bestHeight && vm.height <= FrontEndMenuManager.m_nPrefsHeight &&
-				   vm.depth >= bestDepth && vm.depth <= FrontEndMenuManager.m_nPrefsDepth){
-					bestWidth = vm.width;
-					bestHeight = vm.height;
-					bestDepth = vm.depth;
-					bestFsMode = GcurSelVM;
-				}
-			}
-		}
-
-		if(bestFsMode < 0){
-			printf("WARNING: Cannot find desired video mode, selecting device cancelled\n");
-			return FALSE;
-		}
-		GcurSelVM = bestFsMode;
+		// GBM exposes a single offscreen "video mode" (index 0) sized to the
+		// render resolution, with no rwVIDEOMODEEXCLUSIVE flag. The upstream
+		// best-fit search only accepts exclusive modes, so just select mode 0.
+		GcurSelVM = 0;
+		bestWndMode = 0;
 
 		FrontEndMenuManager.m_nDisplayVideoMode = GcurSelVM;
 		FrontEndMenuManager.m_nPrefsVideoMode = FrontEndMenuManager.m_nDisplayVideoMode;
@@ -931,120 +1016,37 @@ psSelectDevice()
 	return TRUE;
 }
 
-#ifndef GET_KEYBOARD_INPUT_FROM_X11
-void keypressCB(GLFWwindow* window, int key, int scancode, int action, int mods);
-#endif
-void resizeCB(GLFWwindow* window, int width, int height);
-void scrollCB(GLFWwindow* window, double xoffset, double yoffset);
-void cursorCB(GLFWwindow* window, double xpos, double ypos);
-void cursorEnterCB(GLFWwindow* window, int entered);
-void windowFocusCB(GLFWwindow* window, int focused);
-void windowIconifyCB(GLFWwindow* window, int iconified);
-void joysChangeCB(int jid, int event);
+// No window system under GBM: there are no input/window callbacks to register.
+// Joystick/keyboard input will later come from a pluggable source (GPIO, see
+// docs/08 §5). For the first milestone input is empty.
 
 bool IsThisJoystickBlacklisted(int i)
 {
-#ifndef DETECT_JOYSTICK_MENU
-	return false;
-#else
-	if (glfwJoystickIsGamepad(i))
-		return false;
-
-	const char* joyname = glfwGetJoystickName(i);
-
-	if (gSelectedJoystickName[0] != '\0' &&
-		strncmp(joyname, gSelectedJoystickName, strlen(gSelectedJoystickName)) == 0)
-		return false;
-
-	return true;
-#endif
+	(void)i;
+	return true;	// no joysticks enumerated under GBM
 }
 
 void _InputInitialiseJoys()
 {
+	// No GLFW joystick enumeration; GPIO input source is a later task (docs/08 §5).
 	PSGLOBAL(joy1id) = -1;
 	PSGLOBAL(joy2id) = -1;
-
-	// Load our gamepad mappings.
-#define SDL_GAMEPAD_DB_PATH "gamecontrollerdb.txt"
-	FILE *f = fopen(SDL_GAMEPAD_DB_PATH, "rb");
-	if (f) {
-		fseek(f, 0, SEEK_END);
-		size_t fsize = ftell(f);
-		fseek(f, 0, SEEK_SET);
-
-		char *db = (char*)malloc(fsize + 1);
-		if (fread(db, 1, fsize, f) == fsize) {
-			db[fsize] = '\0';
-
-			if (glfwUpdateGamepadMappings(db) == GLFW_FALSE)
-				Error("glfwUpdateGamepadMappings didn't succeed, check " SDL_GAMEPAD_DB_PATH ".\n");
-		} else
-			Error("fread on " SDL_GAMEPAD_DB_PATH " wasn't successful.\n");
-
-		free(db);
-		fclose(f);
-	} else
-		printf("You don't seem to have copied " SDL_GAMEPAD_DB_PATH " file from re3/gamefiles to GTA3 directory. Some gamepads may not be recognized.\n");
-
-#undef SDL_GAMEPAD_DB_PATH
-
-	// But always overwrite it with the one in SDL_GAMECONTROLLERCONFIG.
-	char const* EnvControlConfig = getenv("SDL_GAMECONTROLLERCONFIG");
-	if (EnvControlConfig != nil) {
-		glfwUpdateGamepadMappings(EnvControlConfig);
-	}
-
-	for (int i = 0; i <= GLFW_JOYSTICK_LAST; i++) {
-		if (glfwJoystickPresent(i) && !IsThisJoystickBlacklisted(i)) {
-			if (PSGLOBAL(joy1id) == -1)
-				PSGLOBAL(joy1id) = i;
-			else if (PSGLOBAL(joy2id) == -1)
-				PSGLOBAL(joy2id) = i;
-			else
-				break;
-		}
-	}
-
-	if (PSGLOBAL(joy1id) != -1) {
-		int count;
-		glfwGetJoystickButtons(PSGLOBAL(joy1id), &count);
-#ifdef DETECT_JOYSTICK_MENU
-		strcpy(gSelectedJoystickName, glfwGetJoystickName(PSGLOBAL(joy1id)));
-#endif
-		ControlsManager.InitDefaultControlConfigJoyPad(count);
-	}
 }
 
 long _InputInitialiseMouse()
 {
-	glfwSetInputMode(PSGLOBAL(window), GLFW_CURSOR, GLFW_CURSOR_HIDDEN);
+	// No mouse / no cursor under GBM.
 	return 0;
 }
 
 void psPostRWinit(void)
 {
-	RwVideoMode vm;
-	RwEngineGetVideoModeInfo(&vm, GcurSelVM);
-
-	glfwSetFramebufferSizeCallback(PSGLOBAL(window), resizeCB);
-#ifndef IGNORE_MOUSE_KEYBOARD
-#ifndef GET_KEYBOARD_INPUT_FROM_X11
-	glfwSetKeyCallback(PSGLOBAL(window), keypressCB);
-#endif
-	glfwSetScrollCallback(PSGLOBAL(window), scrollCB);
-	glfwSetCursorPosCallback(PSGLOBAL(window), cursorCB);
-	glfwSetCursorEnterCallback(PSGLOBAL(window), cursorEnterCB);
-#endif
-	glfwSetWindowIconifyCallback(PSGLOBAL(window), windowIconifyCB);
-	glfwSetWindowFocusCallback(PSGLOBAL(window), windowFocusCB);
-	glfwSetJoystickCallback(joysChangeCB);
+	// No window system: no callbacks, no window resize. Open the framebuffer
+	// output sink and clear pads.
+	_psOpenFramebuffer();
 
 	_InputInitialiseJoys();
 	_InputInitialiseMouse();
-
-	if(!(vm.flags & rwVIDEOMODEEXCLUSIVE))
-		glfwSetWindowSize(PSGLOBAL(window), RsGlobal.maximumWidth, RsGlobal.maximumHeight);
 
 	// Make sure all keys are released
 	CPad::GetPad(0)->Clear(true);
@@ -1355,43 +1357,19 @@ void dummyHandler(int sig){
 #endif
 #endif
 
-void resizeCB(GLFWwindow* window, int width, int height) {
-	/*
-	* Handle event to ensure window contents are displayed during re-size
-	* as this can be disabled by the user, then if there is not enough
-	* memory things don't work.
-	*/
-	/* redraw window */
-
-	if (RwInitialised && gGameState == GS_PLAYING_GAME)
-	{
-		RsEventHandler(rsIDLE, (void *)TRUE);
-	}
-
-	if (RwInitialised && height > 0 && width > 0) {
-		RwRect r;
-
-		// TODO fix artifacts of resizing with mouse
-		RsGlobal.maximumHeight = height;
-		RsGlobal.maximumWidth = width;
-
-		r.x = 0;
-		r.y = 0;
-		r.w = width;
-		r.h = height;
-
-		RsEventHandler(rsCAMERASIZE, &r);
-	}
-//	glfwSetWindowPos(window, 0, 0);
-}
-
-void scrollCB(GLFWwindow* window, double xoffset, double yoffset) {
-	PSGLOBAL(mouseWheel) = yoffset;
-}
+// No window system under GBM: window resize / scroll callbacks are gone.
 
 bool lshiftStatus = false;
 bool rshiftStatus = false;
 
+// GBM: no window system, so no keyboard callbacks / keymap. Provide a no-op
+// initkeymap(); real input comes from a pluggable source later (docs/08 §5).
+static void
+initkeymap(void)
+{
+}
+
+#if 0	// dead GLFW/X11 keyboard code below, kept for reference only
 #ifndef GET_KEYBOARD_INPUT_FROM_X11
 int keymap[GLFW_KEY_LAST + 1];
 
@@ -1799,39 +1777,14 @@ void checkKeyPresses()
 
 }
 #endif
+#endif	// #if 0 : end of dead GLFW/X11 keyboard code
 
-// R* calls that in ControllerConfig, idk why
+// R* calls that in ControllerConfig, idk why. Under GBM there's no keyboard
+// input yet, so keep the shift status flags at their (false) defaults.
 void
 _InputTranslateShiftKeyUpDown(RsKeyCodes *rs) {
 	RsKeyboardEventHandler(lshiftStatus ? rsKEYDOWN : rsKEYUP, &(*rs = rsLSHIFT));
 	RsKeyboardEventHandler(rshiftStatus ? rsKEYDOWN : rsKEYUP, &(*rs = rsRSHIFT));
-}
-
-// TODO this only works in frontend(and luckily only frontend use this). Fun fact: if I get pos manually in game, glfw reports that it's > 32000
-void
-cursorCB(GLFWwindow* window, double xpos, double ypos) {
-	if (!FrontEndMenuManager.m_bMenuActive)
-		return;
-	
-	int winw, winh;
-	glfwGetWindowSize(PSGLOBAL(window), &winw, &winh);
-	FrontEndMenuManager.m_nMouseTempPosX = xpos * (RsGlobal.maximumWidth / winw);
-	FrontEndMenuManager.m_nMouseTempPosY = ypos * (RsGlobal.maximumHeight / winh);
-}
-
-void
-cursorEnterCB(GLFWwindow* window, int entered) {
-	PSGLOBAL(cursorIsInWindow) = !!entered;
-}
-
-void
-windowFocusCB(GLFWwindow* window, int focused) {
-	WindowFocused = !!focused;
-}
-
-void
-windowIconifyCB(GLFWwindow* window, int iconified) {
-	WindowIconified = !!iconified;
 }
 
 /*
@@ -2082,15 +2035,14 @@ main(int argc, char *argv[])
 		
 		CTimer::Update();
 		
-		while( !RsGlobal.quit && !(FrontEndMenuManager.m_bWantToRestart || TheMemoryCard.b_FoundRecentSavedGameWantToLoad) && !glfwWindowShouldClose(PSGLOBAL(window)) )
+		while( !RsGlobal.quit && !(FrontEndMenuManager.m_bWantToRestart || TheMemoryCard.b_FoundRecentSavedGameWantToLoad) )
 #else
-		while( !RsGlobal.quit && !FrontEndMenuManager.m_bWantToRestart && !glfwWindowShouldClose(PSGLOBAL(window)))
+		while( !RsGlobal.quit && !FrontEndMenuManager.m_bWantToRestart )
 #endif
 		{
-			glfwPollEvents();
-#ifdef GET_KEYBOARD_INPUT_FROM_X11
-			checkKeyPresses();
-#endif
+			// No window system: no event pump. Quit is driven by RsGlobal.quit
+			// (set by SIGTERM handler or game logic). Input polling (GPIO) will
+			// be added here as a pluggable source (docs/08 §5).
 #ifndef MASTER
 			if (gbModelViewer) {
 				// This is TheModelViewerCore in LCS, but TheModelViewer on other state-machine III-VCs.
@@ -2444,132 +2396,12 @@ main(int argc, char *argv[])
 RwV2d leftStickPos;
 RwV2d rightStickPos;
 
+// GBM: no GLFW joystick. Pad input is empty for the first milestone; a GPIO
+// input source will later write CPad::PCTempJoyState here (docs/08 §5, method
+// A). CPad::UpdatePads still calls this every frame, so it must exist.
 void CapturePad(RwInt32 padID)
 {
-	int8 glfwPad = -1;
-
-	if( padID == 0 )
-		glfwPad = PSGLOBAL(joy1id);
-	else if( padID == 1)
-		glfwPad = PSGLOBAL(joy2id);
-	else
-		assert("invalid padID");
-	
-	if ( glfwPad == -1 )
-		return;
-	
-	int numButtons, numAxes;
-	const uint8 *buttons = glfwGetJoystickButtons(glfwPad, &numButtons);
-	const float *axes = glfwGetJoystickAxes(glfwPad, &numAxes);
-	GLFWgamepadstate gamepadState;
-
-	if (ControlsManager.m_bFirstCapture == false) {
-		memcpy(&ControlsManager.m_OldState, &ControlsManager.m_NewState, sizeof(ControlsManager.m_NewState));
-	} else {
-		// In case connected gamepad doesn't have L-R trigger axes.
-		ControlsManager.m_NewState.mappedButtons[15] = ControlsManager.m_NewState.mappedButtons[16] = 0;
-	}
-
-	ControlsManager.m_NewState.buttons = (uint8*)buttons;
-	ControlsManager.m_NewState.numButtons = numButtons;
-	ControlsManager.m_NewState.id = glfwPad;
-	ControlsManager.m_NewState.isGamepad = glfwGetGamepadState(glfwPad, &gamepadState);
-	if (ControlsManager.m_NewState.isGamepad) {
-		memcpy(&ControlsManager.m_NewState.mappedButtons, gamepadState.buttons, sizeof(gamepadState.buttons));
-		float lt = gamepadState.axes[GLFW_GAMEPAD_AXIS_LEFT_TRIGGER], rt = gamepadState.axes[GLFW_GAMEPAD_AXIS_RIGHT_TRIGGER];
-
-		// glfw returns 0.0 for non-existent axises(which is bullocks) so we treat it as deadzone, and keep value of previous frame.
-		// otherwise if this axis is present, -1 = released, 1 = pressed
-		if (lt != 0.0f)
-			ControlsManager.m_NewState.mappedButtons[15] = lt > -0.8f;
-
-		if (rt != 0.0f)
-			ControlsManager.m_NewState.mappedButtons[16] = rt > -0.8f;
-	}
-	// TODO? L2-R2 axes(not buttons-that's fine) on joysticks that don't have SDL gamepad mapping AREN'T handled, and I think it's impossible to do without mapping.
-
-	if (ControlsManager.m_bFirstCapture == true) {
-		memcpy(&ControlsManager.m_OldState, &ControlsManager.m_NewState, sizeof(ControlsManager.m_NewState));
-		
-		ControlsManager.m_bFirstCapture = false;
-	}
-
-	RsPadButtonStatus bs;
-	bs.padID = padID;
-
-	RsPadEventHandler(rsPADBUTTONUP, (void *)&bs);
-	
-	// Gamepad axes are guaranteed to return 0.0f if that particular gamepad doesn't have that axis.
-	// And that's really good for sticks, because gamepads return 0.0 for them when sticks are in released state.
-	if ( glfwPad != -1 ) {
-		leftStickPos.x = ControlsManager.m_NewState.isGamepad ? gamepadState.axes[GLFW_GAMEPAD_AXIS_LEFT_X] : numAxes >= 1 ? axes[0] : 0.0f;
-		leftStickPos.y = ControlsManager.m_NewState.isGamepad ? gamepadState.axes[GLFW_GAMEPAD_AXIS_LEFT_Y] : numAxes >= 2 ? axes[1] : 0.0f;
-
-		rightStickPos.x = ControlsManager.m_NewState.isGamepad ? gamepadState.axes[GLFW_GAMEPAD_AXIS_RIGHT_X] : numAxes >= 3 ? axes[2] : 0.0f;
-		rightStickPos.y = ControlsManager.m_NewState.isGamepad ? gamepadState.axes[GLFW_GAMEPAD_AXIS_RIGHT_Y] : numAxes >= 4 ? axes[3] : 0.0f;
-	}
-	
-	{
-		if (CPad::m_bMapPadOneToPadTwo)
-			bs.padID = 1;
-		
-		RsPadEventHandler(rsPADBUTTONUP,   (void *)&bs);
-		RsPadEventHandler(rsPADBUTTONDOWN, (void *)&bs);
-	}
-	
-	{
-		if (CPad::m_bMapPadOneToPadTwo)
-			bs.padID = 1;
-		
-		CPad *pad = CPad::GetPad(bs.padID);
-
-		if ( Abs(leftStickPos.x)  > 0.3f )
-			pad->PCTempJoyState.LeftStickX	= (int32)(leftStickPos.x  * 128.0f);
-		
-		if ( Abs(leftStickPos.y)  > 0.3f )
-			pad->PCTempJoyState.LeftStickY	= (int32)(leftStickPos.y  * 128.0f);
-		
-		if ( Abs(rightStickPos.x) > 0.3f )
-			pad->PCTempJoyState.RightStickX = (int32)(rightStickPos.x * 128.0f);
-
-		if ( Abs(rightStickPos.y) > 0.3f )
-			pad->PCTempJoyState.RightStickY = (int32)(rightStickPos.y * 128.0f);
-	}
-
-	_psHandleVibration();
-	
-	return;
+	(void)padID;
+	// no input yet
 }
-
-void joysChangeCB(int jid, int event)
-{
-	if (event == GLFW_CONNECTED && !IsThisJoystickBlacklisted(jid)) {
-		if (PSGLOBAL(joy1id) == -1) {
-			PSGLOBAL(joy1id) = jid;
-#ifdef DETECT_JOYSTICK_MENU
-			strcpy(gSelectedJoystickName, glfwGetJoystickName(jid));
-#endif
-			// This is behind LOAD_INI_SETTINGS, because otherwise the Init call below will destroy/overwrite your bindings.
-#ifdef LOAD_INI_SETTINGS
-			int count;
-			glfwGetJoystickButtons(PSGLOBAL(joy1id), &count);
-			ControlsManager.InitDefaultControlConfigJoyPad(count);
-#endif
-		} else if (PSGLOBAL(joy2id) == -1)
-			PSGLOBAL(joy2id) = jid;
-
-	} else if (event == GLFW_DISCONNECTED) {
-		if (PSGLOBAL(joy1id) == jid) {
-			PSGLOBAL(joy1id) = -1;
-		} else if (PSGLOBAL(joy2id) == jid)
-			PSGLOBAL(joy2id) = -1;
-	}
-}
-
-#if (defined(_MSC_VER))
-int strcasecmp(const char* str1, const char* str2)
-{
-	return _strcmpi(str1, str2);
-}
-#endif
 #endif
