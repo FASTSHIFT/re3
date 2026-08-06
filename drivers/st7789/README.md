@@ -14,7 +14,9 @@ Backends: GPIO via `/dev/gpiomem` (root-free), SPI via `spidev`.
 | `st7789.c` | Driver implementation |
 | `pi_gpio.h/.c` | Fast GPIO backend (based on FASTSHIFT/pi_gpio, `/dev/gpiomem`) |
 | `example.c` | Usage example / fps smoke test |
-| `CMakeLists.txt` | Builds `libst7789.a` (+ example) |
+| `pattern.c` | Diagnostic pattern to find the safe SPI clock (continuous refresh) |
+| `setup_pi.sh` / `SETUP.md` | One-time Pi provisioning (see SETUP.md) |
+| `CMakeLists.txt` | Builds `libst7789.a` (+ example, pattern) |
 
 ## Build
 
@@ -64,18 +66,30 @@ CS is driven by GPIO; SPI runs with `SPI_NO_CS`.
 
 ## Performance notes (see docs/06 for the full analysis)
 
-- Measured **~76 fps at 320x240** (100MHz SPI, performance governor).
-- **The key knob is the CPU governor.** With the default `ondemand` governor the
-  CPU downclocks during SPI DMA idle, cutting throughput ~40%. `st7789_tune_system`
-  sets `performance`; make it persistent (rc.local / systemd) for production.
-- Requesting 100MHz: the real SPI clock is `core_freq / even-divisor`. With
-  core_freq=400 the usable steps are 400/4=100MHz, 400/6=66.7MHz, 400/8=50MHz.
-  Lock `core_freq` in config.txt to avoid drift.
+- **Default clock is 80MHz requested -> 66.7MHz actual** (`core_freq/6`), the
+  highest divisor step verified glitch-free on the panel. Measured **~53 fps at
+  320x240** with the performance governor.
+- **Stability trumps raw speed.** 100MHz (`core_freq/4`) reaches ~78 fps but
+  shows shimmer/random bit errors under continuous refresh on this panel/ribbon.
+  66.7MHz is rock-steady. Always re-verify on your own panel with `st7789_pattern
+  <hz> -1` (continuous refresh; instability = visible shimmer).
+- The real SPI clock is `core_freq / even-divisor`. With core_freq=400 the usable
+  steps are 400/4=100MHz, 400/6=66.7MHz, 400/8=50MHz — intermediate requests are
+  quantized down. Lock `core_freq` in config.txt to avoid drift.
+- **The other key knob is the CPU governor.** With the default `ondemand`
+  governor the CPU downclocks during SPI DMA idle, cutting throughput ~40%.
+  `st7789_tune_system` sets `performance`; `setup_pi.sh` makes it persistent.
 - `chunk_bytes` default 32768 (avoids the DMA-lite 32K limit; equal throughput to
   64K). Enlarge kernel `spidev.bufsiz` (boot cmdline) if you push single
   transfers larger than the default 4096.
-- 100MHz exceeds the ST7789 datasheet nominal (~62MHz). It works on the bus here,
-  but verify visual stability on the actual panel/ribbon before shipping.
+
+### Finding the safe clock on a new panel
+
+```bash
+./st7789_pattern 100000000 -1   # continuous refresh; watch for shimmer
+./st7789_pattern 80000000  -1   # -> 66.7MHz; steady = safe
+```
+Pick the highest step that stays perfectly steady, then set `cfg.spi_hz`.
 
 ## Prerequisites on the Pi
 

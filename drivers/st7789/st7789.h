@@ -5,8 +5,9 @@
  * produce an RGB565 framebuffer and call st7789_flush* to push it to the panel.
  *
  * Backends: GPIO via /dev/gpiomem (root-free, see pi_gpio), SPI via spidev.
- * Performance: ~77 fps at 320x240 with 100MHz + performance governor
- * (see docs/06 for the full analysis).
+ * Performance: ~53 fps at 320x240 with the verified-stable 66.7MHz clock +
+ * performance governor. 100MHz is faster (~78 fps) but glitches on this
+ * panel/ribbon; 66.7MHz (core_freq/6) is rock-steady. See docs/06.
  *
  * Threading: an st7789_t handle is not thread-safe. If the render thread and
  * push thread are separate, serialize access to a single handle externally,
@@ -58,7 +59,8 @@ typedef struct {
 
 /*
  * Fill cfg with recommended defaults: 320x240 landscape, /dev/spidev0.0,
- * 100MHz, pins RST=27 CS=8 DC=25 BLK=24, 32K chunk, little-endian, inverted.
+ * 80MHz request (-> 66.7MHz actual, the verified stable step; see docs/06),
+ * pins RST=27 CS=8 DC=25 BLK=24, 32K chunk, little-endian, inverted.
  */
 void st7789_config_default(st7789_config_t* cfg);
 

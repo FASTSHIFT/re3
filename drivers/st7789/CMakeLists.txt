@@ -24,4 +24,8 @@ option(ST7789_BUILD_EXAMPLE "Build the ST7789 example/smoke test" ON)
 if(ST7789_BUILD_EXAMPLE)
     add_executable(st7789_example example.c)
     target_link_libraries(st7789_example PRIVATE st7789)
+
+    # Diagnostic pattern tool for finding the safe SPI clock (continuous refresh).
+    add_executable(st7789_pattern pattern.c)
+    target_link_libraries(st7789_pattern PRIVATE st7789)
 endif()

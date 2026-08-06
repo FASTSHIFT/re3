@@ -271,7 +271,13 @@ void st7789_config_default(st7789_config_t* cfg)
     cfg->dc_pin = 25;
     cfg->blk_pin = 24;
     cfg->spi_dev = "/dev/spidev0.0";
-    cfg->spi_hz = 100000000u;
+    /*
+     * Request 80MHz -> quantized to core_freq/6 = 66.7MHz (core_freq=400).
+     * This is the highest divisor step verified glitch-free on the panel via
+     * continuous-refresh testing (see docs/06 and pattern.c). 100MHz (400/4)
+     * shows shimmer/instability; 66.7MHz is rock-steady.
+     */
+    cfg->spi_hz = 80000000u;
     cfg->width = 320;
     cfg->height = 240;
     cfg->rotation = ST7789_ROTATE_90;
