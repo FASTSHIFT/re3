@@ -83,7 +83,7 @@ sdl_init(int renderW, int renderH)
 }
 
 static void
-sdl_present(const uint8_t *rgba, int w, int h)
+sdl_present(const uint16_t *rgb565, int w, int h)
 {
 	if (sRen == 0 || sTex == 0 || sRGBX == 0)
 		return;
@@ -96,15 +96,16 @@ sdl_present(const uint8_t *rgba, int w, int h)
 	if (SDL_PeepEvents(qev, 4, SDL_GETEVENT, SDL_QUIT, SDL_QUIT) > 0)
 		RsGlobal.quit = TRUE;
 
-	// Flip bottom-up GL readback to top-down. SDL_PIXELFORMAT_RGB888 on a
-	// little-endian host is stored as bytes B,G,R,X per pixel.
+	// Expand RGB565 -> RGB888 and flip bottom-up GL readback to top-down.
+	// SDL_PIXELFORMAT_RGB888 on a little-endian host is stored as B,G,R,X bytes.
 	for (int y = 0; y < h; y++) {
-		const uint8_t *srcRow = rgba + (h - 1 - y) * w * 4;
+		const uint16_t *srcRow = rgb565 + (h - 1 - y) * w;
 		uint8_t *dstRow = sRGBX + y * w * 4;
 		for (int x = 0; x < w; x++) {
-			dstRow[x*4+0] = srcRow[x*4+2];	// B
-			dstRow[x*4+1] = srcRow[x*4+1];	// G
-			dstRow[x*4+2] = srcRow[x*4+0];	// R
+			uint16_t p = srcRow[x];
+			dstRow[x*4+0] = (uint8_t)(( p        & 0x1F) << 3);	// B
+			dstRow[x*4+1] = (uint8_t)(((p >> 5)  & 0x3F) << 2);	// G
+			dstRow[x*4+2] = (uint8_t)(((p >> 11) & 0x1F) << 3);	// R
 			dstRow[x*4+3] = 0xFF;
 		}
 	}
@@ -131,9 +132,15 @@ sdl_present(const uint8_t *rgba, int w, int h)
 		if (f) {
 			fprintf(f, "P6\n%d %d\n255\n", w, h);
 			for (int y = 0; y < h; y++) {
-				const uint8_t *srcRow = rgba + (h - 1 - y) * w * 4;	// flip
-				for (int x = 0; x < w; x++)
-					fwrite(srcRow + x * 4, 1, 3, f);	// RGB
+				const uint16_t *srcRow = rgb565 + (h - 1 - y) * w;	// flip
+				for (int x = 0; x < w; x++) {
+					uint16_t p = srcRow[x];
+					uint8_t rgb[3];
+					rgb[0] = (uint8_t)(((p >> 11) & 0x1F) << 3);
+					rgb[1] = (uint8_t)(((p >> 5)  & 0x3F) << 2);
+					rgb[2] = (uint8_t)(( p        & 0x1F) << 3);
+					fwrite(rgb, 1, 3, f);
+				}
 			}
 			fclose(f);
 		}

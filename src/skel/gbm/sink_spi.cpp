@@ -15,6 +15,7 @@
 
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 
 #include "st7789.h"
 
@@ -52,24 +53,34 @@ spi_init(int renderW, int renderH)
 	return sBuf != 0;
 }
 
+// Swap R and B channels of an RGB565 pixel (for BGR panels).
+static inline uint16_t swap_rb_565(uint16_t p)
+{
+	uint16_t r = (p >> 11) & 0x1F, g = (p >> 5) & 0x3F, b = p & 0x1F;
+	return (uint16_t)((b << 11) | (g << 5) | r);
+}
+
 static void
-spi_present(const uint8_t *rgba, int w, int h)
+spi_present(const uint16_t *rgb565, int w, int h)
 {
 	if (sDev == 0 || sBuf == 0 || sW <= 0 || sH <= 0)
 		return;
 
-	// Nearest-neighbor scale render(w x h, bottom-up) -> panel(sW x sH,
-	// top-down), RGBA8 -> RGB565. sSwapRB handles BGR panels.
-	for (int py = 0; py < sH; py++) {
-		int ry = (py * h) / sH;
-		const uint8_t *srcRow = rgba + (h - 1 - ry) * w * 4;	// flip
-		uint16_t *dstRow = sBuf + py * sW;
-		for (int px = 0; px < sW; px++) {
-			int rx = (px * w) / sW;
-			const uint8_t *s = srcRow + rx * 4;
-			uint8_t r = s[0], g = s[1], b = s[2];
-			if (sSwapRB) { uint8_t t = r; r = b; b = t; }
-			dstRow[px] = (uint16_t)(((r & 0xF8) << 8) | ((g & 0xFC) << 3) | (b >> 3));
+	// The frame is already RGB565 (display-native). Nearest-neighbor scale
+	// render(w x h, bottom-up) -> panel(sW x sH, top-down). Fast path: when the
+	// render size matches the panel and no channel swap, flip-copy whole rows.
+	if (w == sW && h == sH && !sSwapRB) {
+		for (int py = 0; py < sH; py++)
+			memcpy(sBuf + py * sW, rgb565 + (h - 1 - py) * w, (size_t)sW * 2);
+	} else {
+		for (int py = 0; py < sH; py++) {
+			int ry = (py * h) / sH;
+			const uint16_t *srcRow = rgb565 + (h - 1 - ry) * w;	// flip
+			uint16_t *dstRow = sBuf + py * sW;
+			for (int px = 0; px < sW; px++) {
+				uint16_t p = srcRow[(px * w) / sW];
+				dstRow[px] = sSwapRB ? swap_rb_565(p) : p;
+			}
 		}
 	}
 	st7789_flush(sDev, sBuf);

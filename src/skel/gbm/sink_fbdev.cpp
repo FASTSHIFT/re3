@@ -55,7 +55,7 @@ fbdev_init(int renderW, int renderH)
 // Debug: dump frames to PPM when RE3_FB_DUMP=<dir> (headless verification when
 // fb0 can't be seen, e.g. the desktop owns it). Writes frameNNNN.ppm.
 static void
-fbdev_dump(const uint8_t *rgba, int w, int h)
+fbdev_dump(const uint16_t *rgb565, int w, int h)
 {
 	static const char *dir = 0;
 	static int init = 0, n = 0, every = 60;
@@ -74,9 +74,15 @@ fbdev_dump(const uint8_t *rgba, int w, int h)
 		if (f) {
 			fprintf(f, "P6\n%d %d\n255\n", w, h);
 			for (int y = 0; y < h; y++) {
-				const uint8_t *srcRow = rgba + (h - 1 - y) * w * 4;	// flip
-				for (int x = 0; x < w; x++)
-					fwrite(srcRow + x * 4, 1, 3, f);
+				const uint16_t *srcRow = rgb565 + (h - 1 - y) * w;	// flip
+				for (int x = 0; x < w; x++) {
+					uint16_t p = srcRow[x];
+					uint8_t rgb[3];
+					rgb[0] = (uint8_t)(((p >> 11) & 0x1F) << 3);
+					rgb[1] = (uint8_t)(((p >> 5)  & 0x3F) << 2);
+					rgb[2] = (uint8_t)(( p        & 0x1F) << 3);
+					fwrite(rgb, 1, 3, f);
+				}
 			}
 			fclose(f);
 		}
@@ -85,9 +91,9 @@ fbdev_dump(const uint8_t *rgba, int w, int h)
 }
 
 static void
-fbdev_present(const uint8_t *rgba, int w, int h)
+fbdev_present(const uint16_t *rgb565, int w, int h)
 {
-	fbdev_dump(rgba, w, h);
+	fbdev_dump(rgb565, w, h);
 
 	if (sMem == 0)
 		return;	// no display; readback already exercised the pipeline
@@ -97,22 +103,25 @@ fbdev_present(const uint8_t *rgba, int w, int h)
 	if (ox < 0) ox = 0;
 	if (oy < 0) oy = 0;
 
-	// GL image is bottom-up; flip vertically while blitting (fb is top-down).
+	// The frame is already RGB565. On a 16bpp fb it's a straight row copy (with
+	// vertical flip, fb is top-down). On 32bpp we expand 565 -> 888.
 	if (sVar.bits_per_pixel == 16) {
 		for (int y = 0; y < h; y++) {
-			const uint8_t *srcRow = rgba + (h - 1 - y) * w * 4;
+			const uint16_t *srcRow = rgb565 + (h - 1 - y) * w;
 			uint16_t *dst = (uint16_t *)(sMem + (oy + y) * sFix.line_length + ox * 2);
-			for (int x = 0; x < w; x++) {
-				uint8_t r = srcRow[x*4+0], g = srcRow[x*4+1], b = srcRow[x*4+2];
-				dst[x] = (uint16_t)(((r & 0xF8) << 8) | ((g & 0xFC) << 3) | (b >> 3));
-			}
+			memcpy(dst, srcRow, (size_t)w * 2);
 		}
 	} else if (sVar.bits_per_pixel == 32) {
 		for (int y = 0; y < h; y++) {
-			const uint8_t *srcRow = rgba + (h - 1 - y) * w * 4;
+			const uint16_t *srcRow = rgb565 + (h - 1 - y) * w;
 			uint32_t *dst = (uint32_t *)(sMem + (oy + y) * sFix.line_length) + ox;
-			for (int x = 0; x < w; x++)
-				dst[x] = (srcRow[x*4+0] << 16) | (srcRow[x*4+1] << 8) | srcRow[x*4+2];
+			for (int x = 0; x < w; x++) {
+				uint16_t p = srcRow[x];
+				uint8_t r = (uint8_t)(((p >> 11) & 0x1F) << 3);
+				uint8_t g = (uint8_t)(((p >> 5)  & 0x3F) << 2);
+				uint8_t b = (uint8_t)(( p        & 0x1F) << 3);
+				dst[x] = (r << 16) | (g << 8) | b;
+			}
 		}
 	}
 }

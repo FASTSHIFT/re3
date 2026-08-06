@@ -224,7 +224,7 @@ psCameraBeginUpdate(RwCamera *camera)
  */
 static OutputSink	*gSink = nil;
 static InputSource	*gInput = nil;
-static uint8		*gReadbackRGBA = nil;	// glReadPixels dst (RGBA8)
+static uint16		*gReadback565 = nil;	// glReadPixels dst (RGB565, display-native)
 static int			gReadbackW = 0, gReadbackH = 0;
 
 static void
@@ -246,7 +246,7 @@ _psCloseOutput(void)
 		gSink->terminate();
 		gSink = nil;
 	}
-	if (gReadbackRGBA != nil) { free(gReadbackRGBA); gReadbackRGBA = nil; }
+	if (gReadback565 != nil) { free(gReadback565); gReadback565 = nil; }
 	gReadbackW = gReadbackH = 0;
 }
 
@@ -258,16 +258,19 @@ _psPresent(void)
 	if (gSink == nil || w <= 0 || h <= 0)
 		return;
 
-	if (w != gReadbackW || h != gReadbackH || gReadbackRGBA == nil) {
-		if (gReadbackRGBA != nil) free(gReadbackRGBA);
-		gReadbackRGBA = (uint8 *)malloc(w * h * 4);
+	if (w != gReadbackW || h != gReadbackH || gReadback565 == nil) {
+		if (gReadback565 != nil) free(gReadback565);
+		gReadback565 = (uint16 *)malloc(w * h * 2);
 		gReadbackW = w;
 		gReadbackH = h;
 	}
-	if (gReadbackRGBA == nil)
+	if (gReadback565 == nil)
 		return;
 
-	// Optional timing (RE3_TIME_PRESENT=1): report avg readback vs present cost.
+	// librw's GBM camera renders into an RGB565 texture FBO (showRaster left it
+	// bound). Read it back directly as RGB565: no software conversion, half the
+	// bytes, and the buffer is already in the display's native format (fb0
+	// 16bpp / ST7789). GL origin is bottom-left. See spike/egl_bo_readback.c.
 	static int timeOn = -1;
 	if (timeOn < 0) timeOn = getenv("RE3_TIME_PRESENT") ? 1 : 0;
 
@@ -277,13 +280,13 @@ _psPresent(void)
 		double t0 = psTimer();
 		if (lastWall != 0) accWall += t0 - lastWall;	// wall time between frames
 		lastWall = t0;
-		glReadPixels(0, 0, w, h, GL_RGBA, GL_UNSIGNED_BYTE, gReadbackRGBA);
+		glReadPixels(0, 0, w, h, GL_RGB, GL_UNSIGNED_SHORT_5_6_5, gReadback565);
 		double t1 = psTimer();
-		gSink->present(gReadbackRGBA, w, h);
+		gSink->present(gReadback565, w, h);
 		double t2 = psTimer();
 		accRead += t1 - t0; accPres += t2 - t1;
 		if (++frames >= 120) {
-			printf("[present] %dx%d glReadPixels=%.2f present=%.2f | frame-to-frame=%.2fms => REAL %.0f fps\n",
+			printf("[present] %dx%d glReadPixels565=%.2f present=%.2f | frame-to-frame=%.2fms => REAL %.0f fps\n",
 				w, h, accRead/frames, accPres/frames, accWall/frames,
 				accWall > 0 ? 1000.0f/(accWall/frames) : 0.0f);
 			accRead = accPres = accWall = 0; frames = 0;
@@ -291,11 +294,9 @@ _psPresent(void)
 		return;
 	}
 
-	// Read back the rendered scene. librw's GBM camera renders into a
-	// texture-backed FBO which showRaster left bound; GL origin is bottom-left.
-	glReadPixels(0, 0, w, h, GL_RGBA, GL_UNSIGNED_BYTE, gReadbackRGBA);
+	glReadPixels(0, 0, w, h, GL_RGB, GL_UNSIGNED_SHORT_5_6_5, gReadback565);
 
-	gSink->present(gReadbackRGBA, w, h);
+	gSink->present(gReadback565, w, h);
 }
 
 /*
@@ -1474,6 +1475,18 @@ main(int argc, char *argv[])
 	/*
 	 * Parameters to be used in RwEngineOpen / rsRWINITIALISE event
 	 */
+
+	// GBM has a single offscreen video mode sized to openParams at RW-open
+	// time; psSelectDevice can't resize it afterwards. So pick the render
+	// resolution here from the saved settings (re3.ini, loaded in psInitialize),
+	// falling back to the RsGlobal defaults. This is what makes the ini
+	// Width/Height actually change the GBM render (and readback) size.
+#ifdef IMPROVED_VIDEOMODE
+	if (FrontEndMenuManager.m_nPrefsWidth > 0 && FrontEndMenuManager.m_nPrefsHeight > 0) {
+		RsGlobal.maximumWidth  = RsGlobal.width  = FrontEndMenuManager.m_nPrefsWidth;
+		RsGlobal.maximumHeight = RsGlobal.height = FrontEndMenuManager.m_nPrefsHeight;
+	}
+#endif
 
 	openParams.width = RsGlobal.maximumWidth;
 	openParams.height = RsGlobal.maximumHeight;

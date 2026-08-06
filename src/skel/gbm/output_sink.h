@@ -23,9 +23,11 @@ struct OutputSink
 	// size (e.g. a fixed panel); the skeleton scales into what present() wants.
 	bool (*init)(int renderW, int renderH);
 
-	// Present one rendered frame. 'rgba' is renderW*renderH RGBA8, bottom-up
-	// (GL origin bottom-left). Sinks flip/scale/convert as needed.
-	void (*present)(const uint8_t *rgba, int renderW, int renderH);
+	// Present one rendered frame. 'rgb565' is renderW*renderH little-endian
+	// RGB565 (the GBM camera renders directly in this display-native format),
+	// bottom-up (GL origin bottom-left). Sinks flip/scale as needed; fb0(16bpp)
+	// and ST7789 consume it directly, the SDL debug sink expands to RGB888.
+	void (*present)(const uint16_t *rgb565, int renderW, int renderH);
 
 	// Release resources. Safe to call if init() failed.
 	void (*terminate)(void);
