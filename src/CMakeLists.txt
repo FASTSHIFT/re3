@@ -156,9 +156,13 @@ endif()
 if(LIBRW_GL3_GFXLIB STREQUAL "GBM")
 	target_link_libraries(${EXECUTABLE} PRIVATE GLESv2 EGL gbm)
 
-	# ST7789 SPI output backend: compile the driver straight into re3 and let
-	# gbm.cpp push frames via st7789_flush (see docs/06). The GLOB_RECURSE above
-	# only scans src/, so add the driver sources explicitly.
+	# The GBM skeleton's pluggable backends live in src/skel/gbm/{sink,input}_*.cpp
+	# and are picked up by the GLOB_RECURSE above; each file self-guards on the
+	# RE3_OUTPUT_* / RE3_INPUT_* macros so exactly one sink and one source
+	# compile per build.
+
+	# SPI output backend: compile the ST7789 driver into re3 (GLOB only scans
+	# src/, so add the driver sources explicitly) so sink_spi/input_gpio can use it.
 	if(RE3_OUTPUT_SPI)
 		target_sources(${EXECUTABLE} PRIVATE
 			${PROJECT_SOURCE_DIR}/drivers/st7789/st7789.c
@@ -167,6 +171,12 @@ if(LIBRW_GL3_GFXLIB STREQUAL "GBM")
 		target_include_directories(${EXECUTABLE} PRIVATE
 			${PROJECT_SOURCE_DIR}/drivers/st7789
 		)
+	endif()
+
+	# SDL debug backend (desktop/emulator): sink_sdl + input_sdl need SDL2.
+	if(RE3_OUTPUT_SDL OR RE3_INPUT_SDL)
+		find_package(SDL2 REQUIRED)
+		target_link_libraries(${EXECUTABLE} PRIVATE SDL2::SDL2)
 	endif()
 endif()
 

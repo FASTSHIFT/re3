@@ -364,8 +364,15 @@ src/extras/GitSHA1.cpp
 
 # Raspberry Pi cross-compilation (performance optimization fork)
 build-rpi/
+build-gbm/
+build-spi/
+build-fbev/
+build-sdl/
+build-native/
 rpi-sysroot/
 # Local convenience symlink to GTA3 assets
 gta3_assets
+gta3_assets.tar.zst
+gamedir/
 # Local convenience symlink to reference project (ST7789 SPI)
 ref_lv_gba_emu

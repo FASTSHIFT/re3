@@ -55,20 +55,14 @@ long _dwOperatingSystemVersion;
 #include "Font.h"
 #include "MemoryMgr.h"
 
-// GBM/EGL surfaceless output: no window system. We read back the default
-// framebuffer with glReadPixels and present it either to /dev/fb0 (default,
-// debug) or to an ST7789 SPI panel (RE3_OUTPUT_SPI, see docs/06/07/08).
-// GLES2 gives us glReadPixels et al.; this TU doesn't pull in librw's glad,
-// so there's no symbol clash.
+// GBM/EGL surfaceless: no window system. The skeleton renders offscreen and
+// reads the frame back with glReadPixels (GLES2). Where the frame goes and how
+// input arrives are pluggable backends in separate files, selected at build
+// time: sink_{fbdev,spi,sdl}.cpp and input_{evdev,gpio,sdl,null}.cpp.
+// See docs/07, docs/08. This TU doesn't pull in librw's glad, so no clash.
 #include <GLES2/gl2.h>
-#include <fcntl.h>
-#include <sys/mman.h>
-#include <sys/ioctl.h>
-#include <linux/fb.h>
-#ifdef RE3_OUTPUT_SPI
-#include "st7789.h"
-#include "pi_gpio.h"
-#endif
+#include "output_sink.h"
+#include "input_source.h"
 
 #define MAX_SUBSYSTEMS		(16)
 
@@ -198,104 +192,34 @@ psCameraBeginUpdate(RwCamera *camera)
 
 /*
  *****************************************************************************
- * Output sink for the headless GBM skeleton. Each frame: read the rendered
- * scene back with glReadPixels (RGBA8, bottom-up), then present it to either
- * /dev/fb0 (default, HDMI debug path, docs/07) or an ST7789 SPI panel
- * (RE3_OUTPUT_SPI, docs/06). When the render resolution differs from the
- * output resolution we nearest-neighbor scale; the GL image is flipped
- * vertically to top-down while sampling.
+ * Output: the skeleton owns the glReadPixels; a pluggable OutputSink presents
+ * the frame (fbdev / spi / sdl, selected at build time). See output_sink.h.
  */
+static OutputSink	*gSink = nil;
+static InputSource	*gInput = nil;
 static uint8		*gReadbackRGBA = nil;	// glReadPixels dst (RGBA8)
-static uint16		*gOutRGB565 = nil;		// output-sized RGB565 scratch
 static int			gReadbackW = 0, gReadbackH = 0;
-static int			gOutW = 0, gOutH = 0;	// output/panel resolution
-
-#ifdef RE3_OUTPUT_SPI
-static st7789_t		*gSpiDev = nil;
-static int			gSpiSwapRB = 0;	// swap R<->B (BGR panels), set from env
-#else
-static int			gFbFd = -1;
-static uint8		*gFbMem = nil;
-static size_t		gFbSize = 0;
-static struct fb_var_screeninfo gFbVar;
-static struct fb_fix_screeninfo gFbFix;
-#endif
 
 static void
 _psOpenOutput(void)
 {
-#ifdef RE3_OUTPUT_SPI
-	// ST7789 SPI panel: 320x240 landscape by default (see drivers/st7789).
-	st7789_config_t cfg;
-	st7789_config_default(&cfg);
-	// Color debug knobs via env (avoids reflashing to try combinations):
-	//   RE3_SPI_INVERT=0/1   panel color inversion (INVON/INVOFF)
-	//   RE3_SPI_ENDIAN=0/1   RGB565 byte order sent to panel (1=little)
-	//   RE3_SPI_BGR=0/1      swap R<->B when packing (BGR panels); read in _psPresent
-	//   RE3_SPI_ROT=0..3     rotation
-	//   RE3_SPI_HZ=<hz>      SPI clock
-	{
-		const char *e;
-		if ((e = getenv("RE3_SPI_INVERT")) != nil) cfg.invert = atoi(e);
-		if ((e = getenv("RE3_SPI_ENDIAN")) != nil) cfg.little_endian = atoi(e);
-		if ((e = getenv("RE3_SPI_ROT"))    != nil) cfg.rotation = (st7789_rotation_t)atoi(e);
-		if ((e = getenv("RE3_SPI_HZ"))     != nil) cfg.spi_hz = (uint32_t)strtoul(e, nil, 10);
-		if ((e = getenv("RE3_SPI_BGR"))    != nil) gSpiSwapRB = atoi(e);
-	}
-	st7789_tune_system(65536);	// performance governor: key perf knob (docs/06)
-	gSpiDev = st7789_open(&cfg);
-	if (gSpiDev == nil) {
-		printf("ERROR: st7789_open failed (SPI panel); no output\n");
+	gSink = OutputSink_Get();
+	if (!gSink->init(RsGlobal.maximumWidth, RsGlobal.maximumHeight)) {
+		printf("output sink '%s' init failed\n", gSink->name);
+		gSink = nil;
 		return;
 	}
-	gOutW = st7789_get_width(gSpiDev);
-	gOutH = st7789_get_height(gSpiDev);
-	printf("ST7789 SPI panel %dx%d\n", gOutW, gOutH);
-#else
-	gFbFd = open("/dev/fb0", O_RDWR);
-	if (gFbFd < 0) {
-		printf("WARN: /dev/fb0 unavailable (no HDMI?) - render+readback only\n");
-		return;
-	}
-	if (ioctl(gFbFd, FBIOGET_VSCREENINFO, &gFbVar) != 0 ||
-		ioctl(gFbFd, FBIOGET_FSCREENINFO, &gFbFix) != 0) {
-		printf("WARN: fb0 ioctl failed\n");
-		close(gFbFd);
-		gFbFd = -1;
-		return;
-	}
-	printf("fb0: %dx%d %dbpp line=%d\n", gFbVar.xres, gFbVar.yres,
-		gFbVar.bits_per_pixel, gFbFix.line_length);
-	gFbSize = gFbFix.line_length * gFbVar.yres;
-	gFbMem = (uint8 *)mmap(nil, gFbSize, PROT_READ | PROT_WRITE, MAP_SHARED, gFbFd, 0);
-	if (gFbMem == MAP_FAILED) {
-		printf("WARN: mmap fb0 failed\n");
-		gFbMem = nil;
-		close(gFbFd);
-		gFbFd = -1;
-	}
-	// fb0 path presents at the render resolution, centered.
-	gOutW = RsGlobal.maximumWidth;
-	gOutH = RsGlobal.maximumHeight;
-#endif
+	printf("output sink: %s\n", gSink->name);
 }
 
 static void
 _psCloseOutput(void)
 {
-#ifdef RE3_OUTPUT_SPI
-	if (gSpiDev != nil) { st7789_close(gSpiDev); gSpiDev = nil; }
-#else
-	if (gFbMem != nil && gFbSize != 0)
-		munmap(gFbMem, gFbSize);
-	if (gFbFd >= 0)
-		close(gFbFd);
-	gFbMem = nil;
-	gFbFd = -1;
-	gFbSize = 0;
-#endif
+	if (gSink != nil) {
+		gSink->terminate();
+		gSink = nil;
+	}
 	if (gReadbackRGBA != nil) { free(gReadbackRGBA); gReadbackRGBA = nil; }
-	if (gOutRGB565 != nil) { free(gOutRGB565); gOutRGB565 = nil; }
 	gReadbackW = gReadbackH = 0;
 }
 
@@ -304,7 +228,7 @@ _psPresent(void)
 {
 	int w = RsGlobal.maximumWidth;
 	int h = RsGlobal.maximumHeight;
-	if (w <= 0 || h <= 0)
+	if (gSink == nil || w <= 0 || h <= 0)
 		return;
 
 	if (w != gReadbackW || h != gReadbackH || gReadbackRGBA == nil) {
@@ -320,58 +244,7 @@ _psPresent(void)
 	// texture-backed FBO which showRaster left bound; GL origin is bottom-left.
 	glReadPixels(0, 0, w, h, GL_RGBA, GL_UNSIGNED_BYTE, gReadbackRGBA);
 
-#ifdef RE3_OUTPUT_SPI
-	if (gSpiDev == nil || gOutW <= 0 || gOutH <= 0)
-		return;
-
-	if (gOutRGB565 == nil)
-		gOutRGB565 = (uint16 *)malloc(gOutW * gOutH * 2);
-	if (gOutRGB565 == nil)
-		return;
-
-	// Nearest-neighbor scale render(w x h, bottom-up) -> panel(gOutW x gOutH,
-	// top-down), converting RGBA8 to RGB565. gSpiSwapRB handles BGR panels.
-	for (int py = 0; py < gOutH; py++) {
-		int ry = (py * h) / gOutH;			// top-down render row
-		const uint8 *srcRow = gReadbackRGBA + (h - 1 - ry) * w * 4;	// flip
-		uint16 *dstRow = gOutRGB565 + py * gOutW;
-		for (int px = 0; px < gOutW; px++) {
-			int rx = (px * w) / gOutW;
-			const uint8 *s = srcRow + rx * 4;
-			uint8 r = s[0], g = s[1], b = s[2];
-			if (gSpiSwapRB) { uint8 t = r; r = b; b = t; }
-			dstRow[px] = (uint16)(((r & 0xF8) << 8) | ((g & 0xFC) << 3) | (b >> 3));
-		}
-	}
-	st7789_flush(gSpiDev, gOutRGB565);
-#else
-	if (gFbMem == nil)
-		return;	// no display; readback still exercised the pipeline
-
-	int ox = ((int)gFbVar.xres - w) / 2;
-	int oy = ((int)gFbVar.yres - h) / 2;
-	if (ox < 0) ox = 0;
-	if (oy < 0) oy = 0;
-
-	// GL image is bottom-up; flip vertically while blitting to fb0 (top-down).
-	if (gFbVar.bits_per_pixel == 16) {
-		for (int y = 0; y < h; y++) {
-			const uint8 *srcRow = gReadbackRGBA + (h - 1 - y) * w * 4;
-			uint16 *dst = (uint16 *)(gFbMem + (oy + y) * gFbFix.line_length + ox * 2);
-			for (int x = 0; x < w; x++) {
-				uint8 r = srcRow[x * 4 + 0], g = srcRow[x * 4 + 1], b = srcRow[x * 4 + 2];
-				dst[x] = ((r & 0xF8) << 8) | ((g & 0xFC) << 3) | (b >> 3);
-			}
-		}
-	} else if (gFbVar.bits_per_pixel == 32) {
-		for (int y = 0; y < h; y++) {
-			const uint8 *srcRow = gReadbackRGBA + (h - 1 - y) * w * 4;
-			uint32 *dst = (uint32 *)(gFbMem + (oy + y) * gFbFix.line_length) + ox;
-			for (int x = 0; x < w; x++)
-				dst[x] = (srcRow[x * 4 + 0] << 16) | (srcRow[x * 4 + 1] << 8) | srcRow[x * 4 + 2];
-		}
-	}
-#endif
+	gSink->present(gReadbackRGBA, w, h);
 }
 
 /*
@@ -763,6 +636,10 @@ void
 psTerminate(void)
 {
 	_psCloseOutput();
+	if (gInput != nil) {
+		gInput->terminate();
+		gInput = nil;
+	}
 	return;
 }
 
@@ -1112,21 +989,17 @@ long _InputInitialiseMouse()
 	return 0;
 }
 
-#ifdef RE3_OUTPUT_SPI
-static void _psInitGpioInput(void);	// defined near CapturePad (GPIO input)
-#endif
-
 void psPostRWinit(void)
 {
 	// No window system: no callbacks, no window resize. Open the output sink
-	// (fb0 or SPI panel) and clear pads.
+	// (fbdev/spi/sdl) and input source (evdev/gpio/sdl/null), then clear pads.
 	_psOpenOutput();
 
 	_InputInitialiseJoys();
 	_InputInitialiseMouse();
-#ifdef RE3_OUTPUT_SPI
-	_psInitGpioInput();
-#endif
+
+	gInput = InputSource_Get();
+	gInput->init();
 
 	// Make sure all keys are released
 	CPad::GetPad(0)->Clear(true);
@@ -1449,415 +1322,6 @@ initkeymap(void)
 {
 }
 
-#if 0	// dead GLFW/X11 keyboard code below, kept for reference only
-#ifndef GET_KEYBOARD_INPUT_FROM_X11
-int keymap[GLFW_KEY_LAST + 1];
-
-static void
-initkeymap(void)
-{
-	int i;
-	for (i = 0; i < GLFW_KEY_LAST + 1; i++)
-		keymap[i] = rsNULL;
-
-	keymap[GLFW_KEY_SPACE] = ' ';
-	keymap[GLFW_KEY_APOSTROPHE] = '\'';
-	keymap[GLFW_KEY_COMMA] = ',';
-	keymap[GLFW_KEY_MINUS] = '-';
-	keymap[GLFW_KEY_PERIOD] = '.';
-	keymap[GLFW_KEY_SLASH] = '/';
-	keymap[GLFW_KEY_0] = '0';
-	keymap[GLFW_KEY_1] = '1';
-	keymap[GLFW_KEY_2] = '2';
-	keymap[GLFW_KEY_3] = '3';
-	keymap[GLFW_KEY_4] = '4';
-	keymap[GLFW_KEY_5] = '5';
-	keymap[GLFW_KEY_6] = '6';
-	keymap[GLFW_KEY_7] = '7';
-	keymap[GLFW_KEY_8] = '8';
-	keymap[GLFW_KEY_9] = '9';
-	keymap[GLFW_KEY_SEMICOLON] = ';';
-	keymap[GLFW_KEY_EQUAL] = '=';
-	keymap[GLFW_KEY_A] = 'A';
-	keymap[GLFW_KEY_B] = 'B';
-	keymap[GLFW_KEY_C] = 'C';
-	keymap[GLFW_KEY_D] = 'D';
-	keymap[GLFW_KEY_E] = 'E';
-	keymap[GLFW_KEY_F] = 'F';
-	keymap[GLFW_KEY_G] = 'G';
-	keymap[GLFW_KEY_H] = 'H';
-	keymap[GLFW_KEY_I] = 'I';
-	keymap[GLFW_KEY_J] = 'J';
-	keymap[GLFW_KEY_K] = 'K';
-	keymap[GLFW_KEY_L] = 'L';
-	keymap[GLFW_KEY_M] = 'M';
-	keymap[GLFW_KEY_N] = 'N';
-	keymap[GLFW_KEY_O] = 'O';
-	keymap[GLFW_KEY_P] = 'P';
-	keymap[GLFW_KEY_Q] = 'Q';
-	keymap[GLFW_KEY_R] = 'R';
-	keymap[GLFW_KEY_S] = 'S';
-	keymap[GLFW_KEY_T] = 'T';
-	keymap[GLFW_KEY_U] = 'U';
-	keymap[GLFW_KEY_V] = 'V';
-	keymap[GLFW_KEY_W] = 'W';
-	keymap[GLFW_KEY_X] = 'X';
-	keymap[GLFW_KEY_Y] = 'Y';
-	keymap[GLFW_KEY_Z] = 'Z';
-	keymap[GLFW_KEY_LEFT_BRACKET] = '[';
-	keymap[GLFW_KEY_BACKSLASH] = '\\';
-	keymap[GLFW_KEY_RIGHT_BRACKET] = ']';
-	keymap[GLFW_KEY_GRAVE_ACCENT] = '`';
-	keymap[GLFW_KEY_ESCAPE] = rsESC;
-	keymap[GLFW_KEY_ENTER] = rsENTER;
-	keymap[GLFW_KEY_TAB] = rsTAB;
-	keymap[GLFW_KEY_BACKSPACE] = rsBACKSP;
-	keymap[GLFW_KEY_INSERT] = rsINS;
-	keymap[GLFW_KEY_DELETE] = rsDEL;
-	keymap[GLFW_KEY_RIGHT] = rsRIGHT;
-	keymap[GLFW_KEY_LEFT] = rsLEFT;
-	keymap[GLFW_KEY_DOWN] = rsDOWN;
-	keymap[GLFW_KEY_UP] = rsUP;
-	keymap[GLFW_KEY_PAGE_UP] = rsPGUP;
-	keymap[GLFW_KEY_PAGE_DOWN] = rsPGDN;
-	keymap[GLFW_KEY_HOME] = rsHOME;
-	keymap[GLFW_KEY_END] = rsEND;
-	keymap[GLFW_KEY_CAPS_LOCK] = rsCAPSLK;
-	keymap[GLFW_KEY_SCROLL_LOCK] = rsSCROLL;
-	keymap[GLFW_KEY_NUM_LOCK] = rsNUMLOCK;
-	keymap[GLFW_KEY_PRINT_SCREEN] = rsNULL;
-	keymap[GLFW_KEY_PAUSE] = rsPAUSE;
-
-	keymap[GLFW_KEY_F1] = rsF1;
-	keymap[GLFW_KEY_F2] = rsF2;
-	keymap[GLFW_KEY_F3] = rsF3;
-	keymap[GLFW_KEY_F4] = rsF4;
-	keymap[GLFW_KEY_F5] = rsF5;
-	keymap[GLFW_KEY_F6] = rsF6;
-	keymap[GLFW_KEY_F7] = rsF7;
-	keymap[GLFW_KEY_F8] = rsF8;
-	keymap[GLFW_KEY_F9] = rsF9;
-	keymap[GLFW_KEY_F10] = rsF10;
-	keymap[GLFW_KEY_F11] = rsF11;
-	keymap[GLFW_KEY_F12] = rsF12;
-	keymap[GLFW_KEY_F13] = rsNULL;
-	keymap[GLFW_KEY_F14] = rsNULL;
-	keymap[GLFW_KEY_F15] = rsNULL;
-	keymap[GLFW_KEY_F16] = rsNULL;
-	keymap[GLFW_KEY_F17] = rsNULL;
-	keymap[GLFW_KEY_F18] = rsNULL;
-	keymap[GLFW_KEY_F19] = rsNULL;
-	keymap[GLFW_KEY_F20] = rsNULL;
-	keymap[GLFW_KEY_F21] = rsNULL;
-	keymap[GLFW_KEY_F22] = rsNULL;
-	keymap[GLFW_KEY_F23] = rsNULL;
-	keymap[GLFW_KEY_F24] = rsNULL;
-	keymap[GLFW_KEY_F25] = rsNULL;
-	keymap[GLFW_KEY_KP_0] = rsPADINS;
-	keymap[GLFW_KEY_KP_1] = rsPADEND;
-	keymap[GLFW_KEY_KP_2] = rsPADDOWN;
-	keymap[GLFW_KEY_KP_3] = rsPADPGDN;
-	keymap[GLFW_KEY_KP_4] = rsPADLEFT;
-	keymap[GLFW_KEY_KP_5] = rsPAD5;
-	keymap[GLFW_KEY_KP_6] = rsPADRIGHT;
-	keymap[GLFW_KEY_KP_7] = rsPADHOME;
-	keymap[GLFW_KEY_KP_8] = rsPADUP;
-	keymap[GLFW_KEY_KP_9] = rsPADPGUP;
-	keymap[GLFW_KEY_KP_DECIMAL] = rsPADDEL;
-	keymap[GLFW_KEY_KP_DIVIDE] = rsDIVIDE;
-	keymap[GLFW_KEY_KP_MULTIPLY] = rsTIMES;
-	keymap[GLFW_KEY_KP_SUBTRACT] = rsMINUS;
-	keymap[GLFW_KEY_KP_ADD] = rsPLUS;
-	keymap[GLFW_KEY_KP_ENTER] = rsPADENTER;
-	keymap[GLFW_KEY_KP_EQUAL] = rsNULL;
-	keymap[GLFW_KEY_LEFT_SHIFT] = rsLSHIFT;
-	keymap[GLFW_KEY_LEFT_CONTROL] = rsLCTRL;
-	keymap[GLFW_KEY_LEFT_ALT] = rsLALT;
-	keymap[GLFW_KEY_LEFT_SUPER] = rsLWIN;
-	keymap[GLFW_KEY_RIGHT_SHIFT] = rsRSHIFT;
-	keymap[GLFW_KEY_RIGHT_CONTROL] = rsRCTRL;
-	keymap[GLFW_KEY_RIGHT_ALT] = rsRALT;
-	keymap[GLFW_KEY_RIGHT_SUPER] = rsRWIN;
-	keymap[GLFW_KEY_MENU] = rsNULL;
-}
-
-void
-keypressCB(GLFWwindow* window, int key, int scancode, int action, int mods)
-{
-	if (key >= 0 && key <= GLFW_KEY_LAST && action != GLFW_REPEAT) {
-		RsKeyCodes ks = (RsKeyCodes)keymap[key];
-
-		if (key == GLFW_KEY_LEFT_SHIFT)
-			lshiftStatus = action != GLFW_RELEASE;
-
-		if (key == GLFW_KEY_RIGHT_SHIFT)
-			rshiftStatus = action != GLFW_RELEASE;
-
-		if (action == GLFW_RELEASE) RsKeyboardEventHandler(rsKEYUP, &ks);
-		else if (action == GLFW_PRESS) RsKeyboardEventHandler(rsKEYDOWN, &ks);
-	}
-}
-
-#else
-
-uint32 keymap[512]; // 256 ascii + 256 KeySyms between 0xff00 - 0xffff
-bool keyStates[512];
-uint32 keyCodeToKeymapIndex[256]; // cache for physical keys
-
-#define KEY_MAP_OFFSET (0xff00 - 256)
-static void
-initkeymap(void)
-{
-	Display *display = glfwGetX11Display();
-	int i;
-
-	for (i = 0; i < ARRAY_SIZE(keymap); i++)
-		keymap[i] = rsNULL;
-
-	// You can add new ASCII mappings to here freely (but beware that if right hand side of assignment isn't supported on CFont, it'll be blank/won't work on binding screen)
-	// Right hand side of assigments should always be uppercase counterpart of character
-	keymap[XK_space] = ' ';
-	keymap[XK_apostrophe] = '\'';
-	keymap[XK_ampersand] = '&';
-	keymap[XK_percent] = '%';
-	keymap[XK_dollar] = '$';
-	keymap[XK_comma] = ',';
-	keymap[XK_minus] = '-';
-	keymap[XK_period] = '.';
-	keymap[XK_slash] = '/';
-	keymap[XK_question] = '?';
-	keymap[XK_exclam] = '!';
-	keymap[XK_quotedbl] = '"';
-	keymap[XK_colon] = ':';
-	keymap[XK_semicolon] = ';';
-	keymap[XK_equal] = '=';
-	keymap[XK_bracketleft] = '[';
-	keymap[XK_backslash] = '\\';
-	keymap[XK_bracketright] = ']';
-	keymap[XK_grave] = '`';
-	keymap[XK_0] = '0';
-	keymap[XK_1] = '1';
-	keymap[XK_2] = '2';
-	keymap[XK_3] = '3';
-	keymap[XK_4] = '4';
-	keymap[XK_5] = '5';
-	keymap[XK_6] = '6';
-	keymap[XK_7] = '7';
-	keymap[XK_8] = '8';
-	keymap[XK_9] = '9';
-	keymap[XK_a] = 'A';
-	keymap[XK_b] = 'B';
-	keymap[XK_c] = 'C';
-	keymap[XK_d] = 'D';
-	keymap[XK_e] = 'E';
-	keymap[XK_f] = 'F';
-	keymap[XK_g] = 'G';
-	keymap[XK_h] = 'H';
-	keymap[XK_i] = 'I';
-	keymap[XK_I] = 'I'; // Turkish I problem
-	keymap[XK_j] = 'J';
-	keymap[XK_k] = 'K';
-	keymap[XK_l] = 'L';
-	keymap[XK_m] = 'M';
-	keymap[XK_n] = 'N';
-	keymap[XK_o] = 'O';
-	keymap[XK_p] = 'P';
-	keymap[XK_q] = 'Q';
-	keymap[XK_r] = 'R';
-	keymap[XK_s] = 'S';
-	keymap[XK_t] = 'T';
-	keymap[XK_u] = 'U';
-	keymap[XK_v] = 'V';
-	keymap[XK_w] = 'W';
-	keymap[XK_x] = 'X';
-	keymap[XK_y] = 'Y';
-	keymap[XK_z] = 'Z';
-
-	// Some of regional but ASCII characters that GTA supports
-	keymap[XK_agrave] = 0x00c0;
-	keymap[XK_aacute] = 0x00c1;
-	keymap[XK_acircumflex] = 0x00c2;
-	keymap[XK_adiaeresis] = 0x00c4;
-
-	keymap[XK_ae] = 0x00c6;
-
-	keymap[XK_egrave] = 0x00c8;
-	keymap[XK_eacute] = 0x00c9;
-	keymap[XK_ecircumflex] = 0x00ca;
-	keymap[XK_ediaeresis] = 0x00cb;
-
-	keymap[XK_igrave] = 0x00cc;
-	keymap[XK_iacute] = 0x00cd;
-	keymap[XK_icircumflex] = 0x00ce;
-	keymap[XK_idiaeresis] = 0x00cf;
-
-	keymap[XK_ccedilla] = 0x00c7;
-	keymap[XK_odiaeresis] = 0x00d6;
-	keymap[XK_udiaeresis] = 0x00dc;
-
-	// These are 0xff00 - 0xffff range of KeySym's, and subtracting KEY_MAP_OFFSET is needed
-	keymap[XK_Escape - KEY_MAP_OFFSET] = rsESC;
-	keymap[XK_Return - KEY_MAP_OFFSET] = rsENTER;
-	keymap[XK_Tab - KEY_MAP_OFFSET] = rsTAB;
-	keymap[XK_BackSpace - KEY_MAP_OFFSET] = rsBACKSP;
-	keymap[XK_Insert - KEY_MAP_OFFSET] = rsINS;
-	keymap[XK_Delete - KEY_MAP_OFFSET] = rsDEL;
-	keymap[XK_Right - KEY_MAP_OFFSET] = rsRIGHT;
-	keymap[XK_Left - KEY_MAP_OFFSET] = rsLEFT;
-	keymap[XK_Down - KEY_MAP_OFFSET] = rsDOWN;
-	keymap[XK_Up - KEY_MAP_OFFSET] = rsUP;
-	keymap[XK_Page_Up - KEY_MAP_OFFSET] = rsPGUP;
-	keymap[XK_Page_Down - KEY_MAP_OFFSET] = rsPGDN;
-	keymap[XK_Home - KEY_MAP_OFFSET] = rsHOME;
-	keymap[XK_End - KEY_MAP_OFFSET] = rsEND;
-	keymap[XK_Caps_Lock - KEY_MAP_OFFSET] = rsCAPSLK;
-	keymap[XK_Scroll_Lock - KEY_MAP_OFFSET] = rsSCROLL;
-	keymap[XK_Num_Lock - KEY_MAP_OFFSET] = rsNUMLOCK;
-	keymap[XK_Pause - KEY_MAP_OFFSET] = rsPAUSE;
-
-	keymap[XK_F1 - KEY_MAP_OFFSET] = rsF1;
-	keymap[XK_F2 - KEY_MAP_OFFSET] = rsF2;
-	keymap[XK_F3 - KEY_MAP_OFFSET] = rsF3;
-	keymap[XK_F4 - KEY_MAP_OFFSET] = rsF4;
-	keymap[XK_F5 - KEY_MAP_OFFSET] = rsF5;
-	keymap[XK_F6 - KEY_MAP_OFFSET] = rsF6;
-	keymap[XK_F7 - KEY_MAP_OFFSET] = rsF7;
-	keymap[XK_F8 - KEY_MAP_OFFSET] = rsF8;
-	keymap[XK_F9 - KEY_MAP_OFFSET] = rsF9;
-	keymap[XK_F10 - KEY_MAP_OFFSET] = rsF10;
-	keymap[XK_F11 - KEY_MAP_OFFSET] = rsF11;
-	keymap[XK_F12 - KEY_MAP_OFFSET] = rsF12;
-	keymap[XK_F13 - KEY_MAP_OFFSET] = rsNULL;
-	keymap[XK_F14 - KEY_MAP_OFFSET] = rsNULL;
-	keymap[XK_F15 - KEY_MAP_OFFSET] = rsNULL;
-	keymap[XK_F16 - KEY_MAP_OFFSET] = rsNULL;
-	keymap[XK_F17 - KEY_MAP_OFFSET] = rsNULL;
-	keymap[XK_F18 - KEY_MAP_OFFSET] = rsNULL;
-	keymap[XK_F19 - KEY_MAP_OFFSET] = rsNULL;
-	keymap[XK_F20 - KEY_MAP_OFFSET] = rsNULL;
-	keymap[XK_F21 - KEY_MAP_OFFSET] = rsNULL;
-	keymap[XK_F22 - KEY_MAP_OFFSET] = rsNULL;
-	keymap[XK_F23 - KEY_MAP_OFFSET] = rsNULL;
-	keymap[XK_F24 - KEY_MAP_OFFSET] = rsNULL;
-	keymap[XK_F25 - KEY_MAP_OFFSET] = rsNULL;
-
-	keymap[XK_KP_0 - KEY_MAP_OFFSET] = rsPADINS;
-	keymap[XK_KP_1 - KEY_MAP_OFFSET] = rsPADEND;
-	keymap[XK_KP_2 - KEY_MAP_OFFSET] = rsPADDOWN;
-	keymap[XK_KP_3 - KEY_MAP_OFFSET] = rsPADPGDN;
-	keymap[XK_KP_4 - KEY_MAP_OFFSET] = rsPADLEFT;
-	keymap[XK_KP_5 - KEY_MAP_OFFSET] = rsPAD5;
-	keymap[XK_KP_6 - KEY_MAP_OFFSET] = rsPADRIGHT;
-	keymap[XK_KP_7 - KEY_MAP_OFFSET] = rsPADHOME;
-	keymap[XK_KP_8 - KEY_MAP_OFFSET] = rsPADUP;
-	keymap[XK_KP_9 - KEY_MAP_OFFSET] = rsPADPGUP;
-	keymap[XK_KP_Insert - KEY_MAP_OFFSET] = rsPADINS;
-	keymap[XK_KP_End - KEY_MAP_OFFSET] = rsPADEND;
-	keymap[XK_KP_Down - KEY_MAP_OFFSET] = rsPADDOWN;
-	keymap[XK_KP_Page_Down - KEY_MAP_OFFSET] = rsPADPGDN;
-	keymap[XK_KP_Left - KEY_MAP_OFFSET] = rsPADLEFT;
-	keymap[XK_KP_Begin - KEY_MAP_OFFSET] = rsPAD5;
-	keymap[XK_KP_Right - KEY_MAP_OFFSET] = rsPADRIGHT;
-	keymap[XK_KP_Home - KEY_MAP_OFFSET] = rsPADHOME;
-	keymap[XK_KP_Up - KEY_MAP_OFFSET] = rsPADUP;
-	keymap[XK_KP_Page_Up - KEY_MAP_OFFSET] = rsPADPGUP;
-
-	keymap[XK_KP_Decimal - KEY_MAP_OFFSET] = rsPADDEL;
-	keymap[XK_KP_Divide - KEY_MAP_OFFSET] = rsDIVIDE;
-	keymap[XK_KP_Multiply - KEY_MAP_OFFSET] = rsTIMES;
-	keymap[XK_KP_Subtract - KEY_MAP_OFFSET] = rsMINUS;
-	keymap[XK_KP_Add - KEY_MAP_OFFSET] = rsPLUS;
-	keymap[XK_KP_Enter - KEY_MAP_OFFSET] = rsPADENTER;
-	keymap[XK_KP_Equal - KEY_MAP_OFFSET] = rsNULL;
-	keymap[XK_Shift_L - KEY_MAP_OFFSET] = rsLSHIFT;
-	keymap[XK_Control_L - KEY_MAP_OFFSET] = rsLCTRL;
-	keymap[XK_Alt_L - KEY_MAP_OFFSET] = rsLALT;
-	keymap[XK_Super_L - KEY_MAP_OFFSET] = rsLWIN;
-	keymap[XK_Shift_R - KEY_MAP_OFFSET] = rsRSHIFT;
-	keymap[XK_Control_R - KEY_MAP_OFFSET] = rsRCTRL;
-	keymap[XK_Alt_R - KEY_MAP_OFFSET] = rsRALT;
-	keymap[XK_Super_R - KEY_MAP_OFFSET] = rsRWIN;
-	keymap[XK_Menu - KEY_MAP_OFFSET] = rsNULL;
-
-	// Cache the key codes' key symbol equivelants, otherwise we will have to do it on each frame
-	// KeyCode is always in [0,255], and represents a physical key
-
-	int min_keycode, max_keycode, keysyms_per_keycode;
-	KeySym *keymap, *origkeymap;
-
-	char *keyboardLang = setlocale (LC_CTYPE, NULL);
-	setlocale(LC_CTYPE, "");
-
-	XDisplayKeycodes(display, &min_keycode, &max_keycode);
-	origkeymap = XGetKeyboardMapping(display, min_keycode, (max_keycode - min_keycode + 1), &keysyms_per_keycode);
-	keymap = origkeymap;
-	for (int i = min_keycode; i <= max_keycode; i++) {
-		int  j, lastKeysym;
-
-		lastKeysym = keysyms_per_keycode - 1;
-		while ((lastKeysym >= 0) && (keymap[lastKeysym] == NoSymbol))
-			lastKeysym--;
-
-		for (j = 0; j <= lastKeysym; j++) {
-			KeySym ks = keymap[j];
-
-			if (ks == NoSymbol)
-				continue;
-
-			if (ks < 256) {
-				keyCodeToKeymapIndex[i] = ks;
-				break;
-			} else if (ks >= 0xff00 && ks < 0xffff) {
-				keyCodeToKeymapIndex[i] = ks - KEY_MAP_OFFSET;
-				break;
-			}
-		}
-		keymap += keysyms_per_keycode;
-	}
-	XFree(origkeymap);
-
-	setlocale(LC_CTYPE, keyboardLang);
-}
-#undef KEY_MAP_OFFSET
-
-void checkKeyPresses()
-{
-	Display *display = glfwGetX11Display();
-	char keys[32];
-	XQueryKeymap(display, keys);
-	for (int i = 0; i < sizeof(keys); i++) {
-		for (int j = 0; j < 8; j++) {
-			KeyCode keycode = 8 * i + j;
-			uint32 keymapIndex = keyCodeToKeymapIndex[keycode];
-			if (keymapIndex != 0) {
-				int rsCode = keymap[keymapIndex];
-				if (rsCode == rsNULL)
-					continue;
-
-				bool pressed = WindowFocused && !!(keys[i] & (1 << j));
-
-				// idk why R* does that
-				if (rsCode == rsLSHIFT)
-					lshiftStatus = pressed;
-				else if (rsCode == rsRSHIFT)
-					rshiftStatus = pressed;
-
-				if (keyStates[keymapIndex] != pressed) {
-					if (pressed) {
-						RsKeyboardEventHandler(rsKEYDOWN, &rsCode);
-					} else {
-						RsKeyboardEventHandler(rsKEYUP, &rsCode);
-					}
-				}
-
-				keyStates[keymapIndex] = pressed;
-			}
-		}
-	}
-
-}
-#endif
-#endif	// #if 0 : end of dead GLFW/X11 keyboard code
 
 // R* calls that in ControllerConfig, idk why. Under GBM there's no keyboard
 // input yet, so keep the shift status flags at their (false) defaults.
@@ -1899,6 +1363,12 @@ main(int argc, char *argv[])
 #endif
 	RwV2d pos;
 	RwInt32 i;
+
+	// Headless: stdout/stderr are pipes to a log file (block-buffered by libc),
+	// which hides progress and makes crashes look like they happen elsewhere.
+	// Force line buffering so the log reflects real-time progress.
+	setvbuf(stdout, nil, _IOLBF, 0);
+	setvbuf(stderr, nil, _IONBF, 0);
 
 #ifdef USE_CUSTOM_ALLOCATOR
 	InitMemoryMgr();
@@ -2121,8 +1591,10 @@ main(int argc, char *argv[])
 #endif
 		{
 			// No window system: no event pump. Quit is driven by RsGlobal.quit
-			// (set by SIGTERM handler or game logic). Input polling (GPIO) will
-			// be added here as a pluggable source (docs/08 §5).
+			// (set by SIGTERM handler or game logic). Poll the pluggable input
+			// source (evdev/sdl keyboard; gpio injects via CapturePad instead).
+			if (gInput != nil)
+				gInput->poll();
 #ifndef MASTER
 			if (gbModelViewer) {
 				// This is TheModelViewerCore in LCS, but TheModelViewer on other state-machine III-VCs.
@@ -2476,96 +1948,13 @@ main(int argc, char *argv[])
 RwV2d leftStickPos;
 RwV2d rightStickPos;
 
-#ifdef RE3_OUTPUT_SPI
-// GPIO physical-button input (docs/08 section 5, method A): treat the buttons
-// as a virtual gamepad and write CPad::PCTempJoyState directly. CPad::UpdatePads
-// aggregates PCTempJoyState into NewState (see Pad.cpp XInput path), so the
-// game logic and ControllerConfig stay untouched.
-//
-// Pins (BCM) and defaults follow the reference handheld (lv_gba_emu rpi port);
-// each is overridable via env (RE3_KEY_UP=.., etc.) for different wiring.
-// Buttons are wired to GND with internal pull-up: unpressed reads 1, pressed 0.
-struct GpioKey { const char *env; int pin; };
-enum {
-	GK_UP, GK_DOWN, GK_LEFT, GK_RIGHT,
-	GK_A, GK_B, GK_SELECT, GK_START, GK_L, GK_R,
-	GK_COUNT
-};
-static GpioKey gGpioKeys[GK_COUNT] = {
-	{ "RE3_KEY_UP",     12 },
-	{ "RE3_KEY_DOWN",   20 },
-	{ "RE3_KEY_LEFT",   21 },
-	{ "RE3_KEY_RIGHT",  13 },
-	{ "RE3_KEY_A",      23 },	// Cross  (accelerate / enter / confirm)
-	{ "RE3_KEY_B",       4 },	// Circle (fire / cancel)
-	{ "RE3_KEY_SELECT", 16 },	// Select (change camera)
-	{ "RE3_KEY_START",  26 },	// Start  (pause / menu)
-	{ "RE3_KEY_L",       5 },	// L1     (look left / target)
-	{ "RE3_KEY_R",       6 }	// R1     (look right / target)
-};
-static bool gGpioReady = false;
-
-static void _psInitGpioInput(void)
-{
-	if (pi_gpio_init() < 0) {
-		printf("WARN: GPIO input unavailable (pi_gpio_init failed)\n");
-		return;
-	}
-	for (int i = 0; i < GK_COUNT; i++) {
-		const char *e = getenv(gGpioKeys[i].env);
-		if (e != nil)
-			gGpioKeys[i].pin = atoi(e);
-		pi_gpio_set_mode((uint8)gGpioKeys[i].pin, PI_GPIO_INPUT);
-		pi_gpio_set_pull((uint8)gGpioKeys[i].pin, PI_GPIO_PULL_UP);
-	}
-	gGpioReady = true;
-	printf("GPIO input ready (UP=%d DOWN=%d LEFT=%d RIGHT=%d A=%d B=%d SELECT=%d START=%d L=%d R=%d)\n",
-		gGpioKeys[GK_UP].pin, gGpioKeys[GK_DOWN].pin, gGpioKeys[GK_LEFT].pin, gGpioKeys[GK_RIGHT].pin,
-		gGpioKeys[GK_A].pin, gGpioKeys[GK_B].pin, gGpioKeys[GK_SELECT].pin, gGpioKeys[GK_START].pin,
-		gGpioKeys[GK_L].pin, gGpioKeys[GK_R].pin);
-}
-
-// active-low: pressed == pin reads 0
-static bool _gpioPressed(int idx)
-{
-	return pi_gpio_get_value((uint8)gGpioKeys[idx].pin) == 0;
-}
-
+// CPad::UpdatePads calls this every frame. Delegate to the active input
+// source's optional gamepad hook (e.g. GPIO writes PCTempJoyState directly,
+// docs/08 method A). Keyboard sources (evdev/sdl) inject via the event chain
+// and leave this hook null.
 void CapturePad(RwInt32 padID)
 {
-	if (padID != 0 || !gGpioReady)
-		return;
-
-	CPad *pad = CPad::GetPad(0);
-	CControllerState &s = pad->PCTempJoyState;
-	s.Clear();
-
-	bool up = _gpioPressed(GK_UP);
-	bool down = _gpioPressed(GK_DOWN);
-	bool left = _gpioPressed(GK_LEFT);
-	bool right = _gpioPressed(GK_RIGHT);
-
-	// D-pad (menu navigation) + left stick (in-game movement). Full deflection
-	// on the stick; game applies its own deadzone (>0.3 of 128).
-	s.DPadUp    = up    ? 255 : 0;
-	s.DPadDown  = down  ? 255 : 0;
-	s.DPadLeft  = left  ? 255 : 0;
-	s.DPadRight = right ? 255 : 0;
-	s.LeftStickX = (int16)((right ? 128 : 0) - (left ? 128 : 0));
-	s.LeftStickY = (int16)((down  ? 128 : 0) - (up   ? 128 : 0));
-
-	s.Cross    = _gpioPressed(GK_A)      ? 255 : 0;
-	s.Circle   = _gpioPressed(GK_B)      ? 255 : 0;
-	s.Select   = _gpioPressed(GK_SELECT) ? 255 : 0;
-	s.Start    = _gpioPressed(GK_START)  ? 255 : 0;
-	s.LeftShoulder1  = _gpioPressed(GK_L) ? 255 : 0;
-	s.RightShoulder1 = _gpioPressed(GK_R) ? 255 : 0;
+	if (gInput != nil && gInput->capturePad != nil)
+		gInput->capturePad((int)padID);
 }
-#else
-// GBM without SPI panel: no input source wired yet.
-void CapturePad(RwInt32 padID)
-{
-	(void)padID;
-}
-#endif
 #endif

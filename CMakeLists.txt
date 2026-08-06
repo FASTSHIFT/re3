@@ -80,6 +80,29 @@ if(${PROJECT}_OUTPUT_SPI)
     message(STATUS "${PROJECT}_OUTPUT_SPI enabled: ST7789 SPI output (drivers/st7789)")
 endif()
 
+# Input source for the GBM (headless) skeleton: read a keyboard via evdev
+# (/dev/input/event*) and feed re3's keyboard event chain. Lets the headless
+# build take input without GLFW/X11. See docs/08.
+option(${PROJECT}_INPUT_EVDEV "GBM skeleton reads keyboard input via evdev (/dev/input)" OFF)
+if(${PROJECT}_INPUT_EVDEV)
+    add_compile_definitions(RE3_INPUT_EVDEV)
+    message(STATUS "${PROJECT}_INPUT_EVDEV enabled: evdev keyboard input")
+endif()
+
+# Desktop/emulator debug backends for the GBM skeleton: present the readback in
+# an SDL2 window and/or take keyboard input from SDL2. Lets the exact GBM render
+# path (EGL+GBM surfaceless GLES2) run and be debugged on a desktop. See docs/08.
+option(${PROJECT}_OUTPUT_SDL "GBM skeleton presents frames in an SDL2 window (desktop debug)" OFF)
+if(${PROJECT}_OUTPUT_SDL)
+    add_compile_definitions(RE3_OUTPUT_SDL)
+    message(STATUS "${PROJECT}_OUTPUT_SDL enabled: SDL2 window output")
+endif()
+option(${PROJECT}_INPUT_SDL "GBM skeleton reads keyboard input from SDL2 (desktop debug)" OFF)
+if(${PROJECT}_INPUT_SDL)
+    add_compile_definitions(RE3_INPUT_SDL)
+    message(STATUS "${PROJECT}_INPUT_SDL enabled: SDL2 keyboard input")
+endif()
+
 if(${PROJECT}_VENDORED_LIBRW)
     add_subdirectory(vendor/librw)
 else()
