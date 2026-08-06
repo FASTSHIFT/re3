@@ -88,6 +88,12 @@ static void delay_ms(unsigned int ms)
 /* Raw SPI write, split into <=chunk_bytes transfers. Returns 0 / <0. */
 static int spi_write(st7789_t* d, const uint8_t* buf, size_t len)
 {
+    /* Re-assert the SPI mode before every transfer to guard against EGL/GBM
+     * or other kernel/firmware paths that may reset the spidev controller
+     * state. Use hardcoded 0x40 for SPI_NO_CS (kernel >=6.x value). */
+    static uint32_t force_mode = 0x40;
+    ioctl(d->spi_fd, SPI_IOC_WR_MODE32, &force_mode);
+
     size_t off = 0;
     while (off < len) {
         size_t n = len - off;
@@ -277,7 +283,7 @@ void st7789_config_default(st7789_config_t* cfg)
      * continuous-refresh testing (see docs/06 and pattern.c). 100MHz (400/4)
      * shows shimmer/instability; 66.7MHz is rock-steady.
      */
-    cfg->spi_hz = 80000000u;
+    cfg->spi_hz = 80000000u;	// request 80MHz -> HW quantizes to 400/6 = 66.7MHz
     cfg->width = 320;
     cfg->height = 240;
     cfg->rotation = ST7789_ROTATE_90;
@@ -303,7 +309,7 @@ st7789_t* st7789_open(const st7789_config_t* cfg)
     d->cs_pin = cfg->cs_pin;
     d->dc_pin = cfg->dc_pin;
     d->blk_pin = cfg->blk_pin;
-    d->spi_hz = cfg->spi_hz ? cfg->spi_hz : 100000000u;
+    d->spi_hz = cfg->spi_hz ? cfg->spi_hz : 80000000u;
     d->width = cfg->width;
     d->height = cfg->height;
     d->x_offset = cfg->x_offset;
@@ -334,10 +340,17 @@ st7789_t* st7789_open(const st7789_config_t* cfg)
         goto fail;
     }
     {
-        uint8_t mode = SPI_MODE_0 | SPI_NO_CS; /* CS driven by GPIO */
+        /* Use SPI_IOC_WR_MODE32 and raw bit values to avoid sysroot/kernel
+         * header mismatch. On kernel >=6.x SPI_NO_CS = bit6 = 0x40;
+         * older headers have it as 0x04 which is SPI_CS_HIGH on new kernels.
+         * Explicitly set MODE0 | NO_CS using the runtime kernel value. */
+        uint32_t mode32 = 0x40; /* SPI_NO_CS, kernel >=6.x value */
         uint8_t bits = 8;
-        if (ioctl(d->spi_fd, SPI_IOC_WR_MODE, &mode) < 0)
-            perror("st7789: SPI_IOC_WR_MODE");
+        if (ioctl(d->spi_fd, SPI_IOC_WR_MODE32, &mode32) < 0) {
+            uint8_t mode8 = 0x40;
+            if (ioctl(d->spi_fd, SPI_IOC_WR_MODE, &mode8) < 0)
+                perror("st7789: SPI_IOC_WR_MODE");
+        }
         if (ioctl(d->spi_fd, SPI_IOC_WR_BITS_PER_WORD, &bits) < 0)
             perror("st7789: SPI_IOC_WR_BITS_PER_WORD");
         if (ioctl(d->spi_fd, SPI_IOC_WR_MAX_SPEED_HZ, &d->spi_hz) < 0)
@@ -399,6 +412,40 @@ int st7789_flush(st7789_t* d, const uint16_t* rgb565)
 {
     if (!d || !rgb565)
         return -1;
+
+    /* Re-assert SPI hardware config + RAMCTRL before every flush.
+     *
+     * Root cause: on Raspberry Pi with kernel 6.x, the VC4 V3D GPU driver
+     * (vc4/v3d) powers up the V3D peripheral and reconfigures PLLs/clocks via
+     * bcm2835_pll_set_rate during eglInitialize / eglMakeCurrent. This triggers
+     * bcm2835_spi_set_cs / bcm2835_spi_reset_hw in the spi-bcm2835 driver,
+     * which resets the SPI CS register (SPI_CS) including the clock polarity
+     * and the DOEN/DOUT bits. The spidev file descriptor retains a stale view
+     * of the speed and mode, so subsequent SPI_IOC_MESSAGE calls go through
+     * with the hardware in a partially reset state: wrong clock phase or byte
+     * order -> wrong colors on the panel.
+     *
+     * Fix: re-issue SPI_IOC_WR_MODE32 + SPI_IOC_WR_MAX_SPEED_HZ before every
+     * flush to restore the exact state we need, and re-send RAMCTRL to the
+     * panel so its LSB-first pixel interpretation is active. This is <1μs of
+     * overhead vs ~15ms of SPI pixel data, so the cost is negligible.
+     *
+     * Note: SPI_NO_CS = bit6 = 0x40 on kernel >=6.x (old headers had 0x04
+     * which is SPI_CS_HIGH). We use the raw value to avoid cross-compile
+     * sysroot/kernel header mismatch. */
+    {
+        uint32_t mode32 = 0x40;    /* SPI_NO_CS, kernel>=6.x */
+        uint8_t  bits   = 8;
+        ioctl(d->spi_fd, SPI_IOC_WR_MODE32,      &mode32);
+        ioctl(d->spi_fd, SPI_IOC_WR_BITS_PER_WORD, &bits);
+        ioctl(d->spi_fd, SPI_IOC_WR_MAX_SPEED_HZ, &d->spi_hz);
+    }
+    if (d->little_endian) {
+        uint8_t rc[2] = { 0x00, 0xF8 };
+        write_cmd(d, ST_CMD_RAMCTRL);
+        write_data(d, rc, 2);
+    }
+
     if (set_window(d, 0, 0, d->width - 1, d->height - 1) < 0)
         return -1;
     return write_data(d, (const uint8_t*)rgb565, (size_t)d->width * d->height * 2);

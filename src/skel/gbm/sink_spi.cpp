@@ -32,6 +32,14 @@ spi_init(int renderW, int renderH)
 	st7789_config_t cfg;
 	st7789_config_default(&cfg);
 
+	// When GLES outputs GL_UNSIGNED_SHORT_5_6_5 on a little-endian host, each
+	// pixel is stored as [GGGBBBBB][RRRRRGGG] in memory (low byte first).
+	// The SPI stream sends bytes in memory order. With little_endian=1 the
+	// driver sets the panel RAMCTRL ENDIAN bit (LSB-first): the panel treats the
+	// first received byte as the low byte of the pixel word, correctly
+	// reconstructing RRRRRGGG_GGGBBBBB = standard RGB565.
+	cfg.little_endian = 1;
+
 	const char *e;
 	if ((e = getenv("RE3_SPI_INVERT")) != 0) cfg.invert = atoi(e);
 	if ((e = getenv("RE3_SPI_ENDIAN")) != 0) cfg.little_endian = atoi(e);
@@ -61,6 +69,19 @@ static inline uint16_t swap_rb_565(uint16_t p)
 }
 
 static void
+spi_dump(const uint16_t *buf, int w, int h)
+{
+	static const char *dir = 0; static int init=0, n=0, every=30;
+	if (!init) { init=1; dir=getenv("RE3_SPI_DUMP"); const char *e=getenv("RE3_SPI_DUMP_EVERY"); if(e) every=atoi(e); if(every<1) every=1; }
+	if (!dir || (n++ % every) != 0) return;
+	char path[512]; snprintf(path,sizeof(path),"%s/frame%04d.ppm",dir,n/every);
+	FILE *f=fopen(path,"wb"); if(!f) return;
+	fprintf(f,"P6\n%d %d\n255\n",w,h);
+	for(int i=0;i<w*h;i++){uint16_t p=buf[i];uint8_t rgb[3];rgb[0]=(p>>11&0x1F)<<3;rgb[1]=(p>>5&0x3F)<<2;rgb[2]=(p&0x1F)<<3;fwrite(rgb,1,3,f);}
+	fclose(f);
+}
+
+static void
 spi_present(const uint16_t *rgb565, int w, int h)
 {
 	if (sDev == 0 || sBuf == 0 || sW <= 0 || sH <= 0)
@@ -83,6 +104,7 @@ spi_present(const uint16_t *rgb565, int w, int h)
 			}
 		}
 	}
+	spi_dump(sBuf, sW, sH);
 	st7789_flush(sDev, sBuf);
 }
 
