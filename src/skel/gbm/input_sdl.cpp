@@ -102,31 +102,34 @@ sdlin_poll(void)
 		gInGameMouseCapture = wantRelative;
 	}
 
+	// Drain motion/button/wheel events (the sink only takes SDL_QUIT, so these
+	// are ours). Accumulate relative motion from xrel/yrel, which works in both
+	// relative and absolute modes and doesn't depend on window-grab timing.
 	static double px = 0, py = 0;
-	Uint32 btn;
-	if (wantRelative) {
-		int dx = 0, dy = 0;
-		btn = SDL_GetRelativeMouseState(&dx, &dy);
-		px += (double)dx;
-		py += (double)dy;
-	} else {
-		int mx = 0, my = 0;
-		btn = SDL_GetMouseState(&mx, &my);
-		px = (double)mx;
-		py = (double)my;
+	int wheel = 0;
+	SDL_Event mev[64];
+	int mn = SDL_PeepEvents(mev, 64, SDL_GETEVENT, SDL_MOUSEMOTION, SDL_MOUSEWHEEL);
+	for (int i = 0; i < mn; i++) {
+		if (mev[i].type == SDL_MOUSEMOTION) {
+			if (wantRelative) {
+				px += mev[i].motion.xrel;
+				py += mev[i].motion.yrel;
+			} else {
+				px = mev[i].motion.x;
+				py = mev[i].motion.y;
+			}
+		} else if (mev[i].type == SDL_MOUSEWHEEL) {
+			wheel = mev[i].wheel.y;
+		}
 	}
+
+	Uint32 btn = SDL_GetMouseState(0, 0);
 	int buttons =
 		((btn & SDL_BUTTON(SDL_BUTTON_LEFT))   ? (1 << GLFW_MOUSE_BUTTON_LEFT)   : 0) |
 		((btn & SDL_BUTTON(SDL_BUTTON_RIGHT))  ? (1 << GLFW_MOUSE_BUTTON_RIGHT)  : 0) |
 		((btn & SDL_BUTTON(SDL_BUTTON_MIDDLE)) ? (1 << GLFW_MOUSE_BUTTON_MIDDLE) : 0) |
 		((btn & SDL_BUTTON(SDL_BUTTON_X1))     ? (1 << GLFW_MOUSE_BUTTON_4)      : 0) |
 		((btn & SDL_BUTTON(SDL_BUTTON_X2))     ? (1 << GLFW_MOUSE_BUTTON_5)      : 0);
-
-	int wheel = 0;
-	SDL_Event wev[16];
-	int wn = SDL_PeepEvents(wev, 16, SDL_GETEVENT, SDL_MOUSEWHEEL, SDL_MOUSEWHEEL);
-	for (int i = 0; i < wn; i++)
-		wheel = wev[i].wheel.y;
 
 	GbmFeedMouse(px, py, buttons, wheel, true);
 }

@@ -267,6 +267,27 @@ _psPresent(void)
 	if (gReadbackRGBA == nil)
 		return;
 
+	// Optional timing (RE3_TIME_PRESENT=1): report avg readback vs present cost.
+	static int timeOn = -1;
+	if (timeOn < 0) timeOn = getenv("RE3_TIME_PRESENT") ? 1 : 0;
+
+	if (timeOn) {
+		static double accRead = 0, accPres = 0; static int frames = 0;
+		double t0 = psTimer();
+		glReadPixels(0, 0, w, h, GL_RGBA, GL_UNSIGNED_BYTE, gReadbackRGBA);
+		double t1 = psTimer();
+		gSink->present(gReadbackRGBA, w, h);
+		double t2 = psTimer();
+		accRead += t1 - t0; accPres += t2 - t1;
+		if (++frames >= 120) {
+			printf("[present] %dx%d glReadPixels=%.2fms present=%.2fms total=%.2fms (%.0f fps cap)\n",
+				w, h, accRead/frames, accPres/frames, (accRead+accPres)/frames,
+				1000.0f/((accRead+accPres)/frames));
+			accRead = accPres = 0; frames = 0;
+		}
+		return;
+	}
+
 	// Read back the rendered scene. librw's GBM camera renders into a
 	// texture-backed FBO which showRaster left bound; GL origin is bottom-left.
 	glReadPixels(0, 0, w, h, GL_RGBA, GL_UNSIGNED_BYTE, gReadbackRGBA);
