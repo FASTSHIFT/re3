@@ -1,13 +1,19 @@
 /*
- * input_gpio.cpp - InputSource for GPIO physical buttons (docs/08 method A).
+ * input_gpio.cpp - GPIO physical-button input (docs/08 method A).
  *
- * Treats the buttons as a virtual gamepad: init() configures the pins (input +
- * pull-up), and capturePad() writes CPad::PCTempJoyState directly, so
- * ControllerConfig and game logic stay untouched. Pin map follows the reference
- * handheld (lv_gba_emu rpi port); each is overridable via env.
- * Buttons are active-low (wired to GND): unpressed reads 1, pressed 0.
+ * Mapping (BCM pins, active-low, pull-up):
+ *   UP/DOWN/LEFT/RIGHT (12/20/21/13) - move (LeftStick+DPad always)
+ *   Y(12) A(20) X(21) B(13) - in GAME: camera look (RightStick); in MENU: DPad
+ *   Actually Y=camera up, A=camera down, X=camera left, B=camera right.
+ *   Uses GK_Y/A/X/B pins separate from direction pad -- see pin assignment below.
  *
- * Active with the SPI build (RE3_OUTPUT_SPI) and no other input source.
+ * Button -> game action:
+ *   YAXB    - camera look (RightStick) in-game; DPad nav in menu
+ *   UP/DOWN/LEFT/RIGHT - move/navigate (LeftStick + DPad always)
+ *   L       - fire / shoot (Circle)
+ *   R       - aim / target (LeftShoulder1)
+ *   SELECT  - enter/exit vehicle / interact (Triangle)
+ *   START   - confirm / jump (Cross); long-press (>600ms) -> ESC (back)
  */
 #if defined RW_GL3 && defined LIBRW_GBM && defined(RE3_OUTPUT_SPI) && !defined(RE3_INPUT_EVDEV) && !defined(RE3_INPUT_SDL)
 
@@ -15,31 +21,52 @@
 
 #include <stdio.h>
 #include <stdlib.h>
+#include <time.h>
 
 #include "common.h"
 #include "Pad.h"
+#include "Frontend.h"	// FrontEndMenuManager.m_bMenuActive
+#include "skeleton.h"	// RsKeyboardEventHandler, rsESC
 #include "pi_gpio.h"
 
+// ---- pin table ------------------------------------------------------------
 struct GpioKey { const char *env; int pin; };
 enum {
 	GK_UP, GK_DOWN, GK_LEFT, GK_RIGHT,
-	GK_A, GK_B, GK_SELECT, GK_START, GK_L, GK_R,
+	GK_Y, GK_A, GK_X, GK_B,	// face buttons (separate from dpad)
+	GK_SELECT, GK_START, GK_L, GK_R,
 	GK_COUNT
 };
 static GpioKey sKeys[GK_COUNT] = {
-	{ "RE3_KEY_UP",     12 },
-	{ "RE3_KEY_DOWN",   20 },
-	{ "RE3_KEY_LEFT",   21 },
-	{ "RE3_KEY_RIGHT",  13 },
-	{ "RE3_KEY_A",      23 },	// Cross  (accelerate / enter / confirm)
-	{ "RE3_KEY_B",       4 },	// Circle (fire / cancel)
-	{ "RE3_KEY_SELECT", 16 },	// Select (change camera)
-	{ "RE3_KEY_START",  26 },	// Start  (pause / menu)
-	{ "RE3_KEY_L",       5 },	// L1     (look left / target)
-	{ "RE3_KEY_R",       6 }	// R1     (look right / target)
+	{ "RE3_KEY_UP",     12 },	// dpad up    -> LeftStick up + DPadUp
+	{ "RE3_KEY_DOWN",   20 },	// dpad down  -> LeftStick down + DPadDown
+	{ "RE3_KEY_LEFT",   21 },	// dpad left  -> LeftStick left + DPadLeft
+	{ "RE3_KEY_RIGHT",  13 },	// dpad right -> LeftStick right + DPadRight
+	{ "RE3_KEY_Y",       2 },	// face Y     -> RightStick up (in-game) / DPadUp (menu)
+	{ "RE3_KEY_A",      23 },	// face A     -> RightStick down / DPadDown
+	{ "RE3_KEY_X",       3 },	// face X     -> RightStick left / DPadLeft
+	{ "RE3_KEY_B",       4 },	// face B     -> RightStick right / DPadRight
+	{ "RE3_KEY_SELECT", 16 },	// SELECT     -> Triangle (enter/exit vehicle)
+	{ "RE3_KEY_START",  26 },	// START      -> Cross (confirm); long->ESC
+	{ "RE3_KEY_L",       5 },	// L shoulder -> Circle (fire/shoot)
+	{ "RE3_KEY_R",       6 }	// R shoulder -> LeftShoulder1 (aim/target)
 };
 static bool sReady = false;
 
+// Long-press START tracking: hold >600ms triggers ESC.
+#define START_LONG_MS 600
+static int     sStartWasDown = 0;
+static double  sStartDownAt  = 0.0;
+static int     sStartLongFired = 0;	// ESC injected, don't also send Cross
+
+static double mono_ms(void)
+{
+	struct timespec ts;
+	clock_gettime(CLOCK_MONOTONIC, &ts);
+	return ts.tv_sec * 1000.0 + ts.tv_nsec / 1e6;
+}
+
+// ---- init -----------------------------------------------------------------
 static void
 gpio_init(void)
 {
@@ -55,18 +82,21 @@ gpio_init(void)
 		pi_gpio_set_pull((uint8)sKeys[i].pin, PI_GPIO_PULL_UP);
 	}
 	sReady = true;
-	printf("gpio: input ready (UP=%d DOWN=%d LEFT=%d RIGHT=%d A=%d B=%d SELECT=%d START=%d L=%d R=%d)\n",
-		sKeys[GK_UP].pin, sKeys[GK_DOWN].pin, sKeys[GK_LEFT].pin, sKeys[GK_RIGHT].pin,
-		sKeys[GK_A].pin, sKeys[GK_B].pin, sKeys[GK_SELECT].pin, sKeys[GK_START].pin,
+	printf("gpio: input ready\n");
+	printf("  dpad  UP=%d DN=%d LT=%d RT=%d\n",
+		sKeys[GK_UP].pin, sKeys[GK_DOWN].pin,
+		sKeys[GK_LEFT].pin, sKeys[GK_RIGHT].pin);
+	printf("  face  Y=%d A=%d X=%d B=%d\n",
+		sKeys[GK_Y].pin, sKeys[GK_A].pin,
+		sKeys[GK_X].pin, sKeys[GK_B].pin);
+	printf("  misc  SEL=%d STA=%d L=%d R=%d\n",
+		sKeys[GK_SELECT].pin, sKeys[GK_START].pin,
 		sKeys[GK_L].pin, sKeys[GK_R].pin);
 }
 
-static bool
-pressed(int idx)
-{
-	return pi_gpio_get_value((uint8)sKeys[idx].pin) == 0;	// active-low
-}
+static inline bool p(int idx) { return pi_gpio_get_value((uint8)sKeys[idx].pin) == 0; }
 
+// ---- capturePad -----------------------------------------------------------
 static void
 gpio_capturePad(int padID)
 {
@@ -77,23 +107,63 @@ gpio_capturePad(int padID)
 	CControllerState &s = pad->PCTempJoyState;
 	s.Clear();
 
-	bool up = pressed(GK_UP), down = pressed(GK_DOWN);
-	bool left = pressed(GK_LEFT), right = pressed(GK_RIGHT);
+	bool inMenu = !!FrontEndMenuManager.m_bMenuActive;
 
-	// D-pad (menu nav) + left stick (in-game movement); game applies deadzone.
-	s.DPadUp    = up    ? 255 : 0;
-	s.DPadDown  = down  ? 255 : 0;
-	s.DPadLeft  = left  ? 255 : 0;
-	s.DPadRight = right ? 255 : 0;
-	s.LeftStickX = (int16)((right ? 128 : 0) - (left ? 128 : 0));
-	s.LeftStickY = (int16)((down  ? 128 : 0) - (up   ? 128 : 0));
+	// --- D-pad: always controls movement (LeftStick) and menu nav (DPad). ---
+	bool du = p(GK_UP), dd = p(GK_DOWN), dl = p(GK_LEFT), dr = p(GK_RIGHT);
+	s.DPadUp    = du ? 255 : 0;
+	s.DPadDown  = dd ? 255 : 0;
+	s.DPadLeft  = dl ? 255 : 0;
+	s.DPadRight = dr ? 255 : 0;
+	s.LeftStickX = (int16)((dr ? 128 : 0) - (dl ? 128 : 0));
+	s.LeftStickY = (int16)((dd ? 128 : 0) - (du ? 128 : 0));
 
-	s.Cross    = pressed(GK_A)      ? 255 : 0;
-	s.Circle   = pressed(GK_B)      ? 255 : 0;
-	s.Select   = pressed(GK_SELECT) ? 255 : 0;
-	s.Start    = pressed(GK_START)  ? 255 : 0;
-	s.LeftShoulder1  = pressed(GK_L) ? 255 : 0;
-	s.RightShoulder1 = pressed(GK_R) ? 255 : 0;
+	// --- Face buttons YAXB ---
+	bool fy = p(GK_Y), fa = p(GK_A), fx = p(GK_X), fb = p(GK_B);
+	if (inMenu) {
+		// In menus, YAXB = DPad navigation (up/down/left/right).
+		// OR into the DPad that the dpad already set.
+		if (fy) { s.DPadUp    = 255; }
+		if (fa) { s.DPadDown  = 255; }
+		if (fx) { s.DPadLeft  = 255; }
+		if (fb) { s.DPadRight = 255; }
+	} else {
+		// In-game: YAXB = camera look via RightStick.
+		// Y=up, A=down, X=left, B=right (full deflection ±128).
+		s.RightStickY = (int16)((fa ? 128 : 0) - (fy ? 128 : 0));
+		s.RightStickX = (int16)((fb ? 128 : 0) - (fx ? 128 : 0));
+	}
+
+	// --- Shoulders ---
+	// L = fire/shoot (Circle), R = aim/target (LeftShoulder1)
+	s.Circle        = p(GK_L) ? 255 : 0;
+	s.LeftShoulder1 = p(GK_R) ? 255 : 0;
+
+	// --- SELECT = Triangle (enter/exit vehicle, interact) ---
+	s.Triangle = p(GK_SELECT) ? 255 : 0;
+
+	// --- START = Cross (confirm/jump); long-press -> ESC (back/pause) ---
+	bool startNow = p(GK_START);
+	if (startNow && !sStartWasDown) {
+		// just pressed
+		sStartDownAt   = mono_ms();
+		sStartLongFired = 0;
+	}
+	if (startNow && !sStartLongFired) {
+		double held = mono_ms() - sStartDownAt;
+		if (held >= START_LONG_MS) {
+			// Long press: inject ESC and mark so we don't also send Cross.
+			int esc = rsESC;
+			RsKeyboardEventHandler(rsKEYDOWN, &esc);
+			RsKeyboardEventHandler(rsKEYUP,   &esc);
+			sStartLongFired = 1;
+		}
+	}
+	if (!startNow && sStartWasDown && !sStartLongFired) {
+		// Short tap released: send Cross (confirm) on release.
+		s.Cross = 255;
+	}
+	sStartWasDown = startNow ? 1 : 0;
 }
 
 static void gpio_poll(void) {}
