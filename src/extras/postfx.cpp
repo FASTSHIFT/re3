@@ -411,6 +411,17 @@ CPostFX::Render(RwCamera *cam, uint32 red, uint32 green, uint32 blue, uint32 blu
 		break;
 	}
 
+#ifdef RPI_LEAN_FX
+	// Raspberry Pi (VC4, bandwidth-bound): the colour-filter/motion-blur post
+	// pass does per-frame full-screen backbuffer grabs + full-screen overlay
+	// blits, which is a major fill-rate/bandwidth cost on this GPU. Skip it
+	// entirely except for the gameplay-critical sniper scope overlay (which the
+	// player needs to see through). Everything else (colour tint, trails) is
+	// cosmetic and dropped. See docs/04, docs/05.
+	if(type != MOTION_BLUR_SNIPER)
+		return;
+#endif
+
 	PUSH_RENDERGROUP("CPostFX::Render");
 	if(pFrontBuffer == nil)
 		Open(cam);

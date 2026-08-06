@@ -103,6 +103,11 @@ void tbDisplay()
 		}
 	}
 #endif
+#ifdef TIMEBARS_LOG
+	// Log-only profiling (e.g. GBM/headless with its own HUD overlay): skip the
+	// on-screen FPS/timer text entirely, we only want the [TB] log above.
+	return;
+#endif
 	CFont::SetBackgroundOff();
 	CFont::SetBackgroundColor(CRGBA(0, 0, 0, 128));
 	CFont::SetScale(0.48f, 1.12f);

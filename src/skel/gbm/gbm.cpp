@@ -63,6 +63,7 @@ long _dwOperatingSystemVersion;
 #include <GLES2/gl2.h>
 #include "output_sink.h"
 #include "input_source.h"
+#include "hud_overlay.h"
 
 #define MAX_SUBSYSTEMS		(16)
 
@@ -250,6 +251,11 @@ _psCloseOutput(void)
 	gReadbackW = gReadbackH = 0;
 }
 
+// Per-frame perf metrics, shared with the HUD overlay and the optional
+// RE3_TIME_PRESENT log. gGpuMs / gCpuMs are filled elsewhere (showRaster /
+// main loop); readback + present are timed here.
+static double gGpuMs = 0.0, gCpuMs = 0.0, gReadMs = 0.0, gPresentMs = 0.0, gFrameMs = 0.0;
+
 static void
 _psPresent(void)
 {
@@ -267,36 +273,45 @@ _psPresent(void)
 	if (gReadback565 == nil)
 		return;
 
+	// Wall time between frames (for FPS).
+	static double lastWall = 0.0;
+	double tw = psTimer();
+	gFrameMs = (lastWall != 0.0) ? (tw - lastWall) : 0.0;
+	lastWall = tw;
+
 	// librw's GBM camera renders into an RGB565 texture FBO (showRaster left it
 	// bound). Read it back directly as RGB565: no software conversion, half the
-	// bytes, and the buffer is already in the display's native format (fb0
-	// 16bpp / ST7789). GL origin is bottom-left. See spike/egl_bo_readback.c.
-	static int timeOn = -1;
-	if (timeOn < 0) timeOn = getenv("RE3_TIME_PRESENT") ? 1 : 0;
+	// bytes, already in the display's native format (fb0 16bpp / ST7789).
+	double t0 = psTimer();
+	glReadPixels(0, 0, w, h, GL_RGB, GL_UNSIGNED_SHORT_5_6_5, gReadback565);
+	double t1 = psTimer();
+	gReadMs = t1 - t0;
 
-	if (timeOn) {
-		static double accRead = 0, accPres = 0, lastWall = 0, accWall = 0;
-		static int frames = 0;
-		double t0 = psTimer();
-		if (lastWall != 0) accWall += t0 - lastWall;	// wall time between frames
-		lastWall = t0;
-		glReadPixels(0, 0, w, h, GL_RGB, GL_UNSIGNED_SHORT_5_6_5, gReadback565);
-		double t1 = psTimer();
-		gSink->present(gReadback565, w, h);
-		double t2 = psTimer();
-		accRead += t1 - t0; accPres += t2 - t1;
-		if (++frames >= 120) {
-			printf("[present] %dx%d glReadPixels565=%.2f present=%.2f | frame-to-frame=%.2fms => REAL %.0f fps\n",
-				w, h, accRead/frames, accPres/frames, accWall/frames,
-				accWall > 0 ? 1000.0f/(accWall/frames) : 0.0f);
-			accRead = accPres = accWall = 0; frames = 0;
-		}
-		return;
+	// Overlay perf metrics onto the frame (RE3_HUD=1) before it goes to the sink.
+	if (Hud_Enabled()) {
+		HudMetrics m;
+		m.frameMs = gFrameMs; m.cpuMs = gCpuMs; m.gpuMs = gGpuMs;
+		m.readMs = gReadMs; m.presentMs = gPresentMs;	// presentMs = last frame's
+		Hud_Update(&m);
+		Hud_Draw(gReadback565, w, h);
 	}
 
-	glReadPixels(0, 0, w, h, GL_RGB, GL_UNSIGNED_SHORT_5_6_5, gReadback565);
-
+	double t2 = psTimer();
 	gSink->present(gReadback565, w, h);
+	gPresentMs = psTimer() - t2;
+
+	// Optional periodic log.
+	static int timeOn = -1;
+	if (timeOn < 0) timeOn = getenv("RE3_TIME_PRESENT") ? 1 : 0;
+	if (timeOn) {
+		static double aR=0,aP=0,aG=0,aC=0,aW=0; static int n=0;
+		aR+=gReadMs; aP+=gPresentMs; aG+=gGpuMs; aC+=gCpuMs; aW+=gFrameMs;
+		if (++n >= 120) {
+			printf("[perf] %dx%d cpu=%.2f gpu=%.2f read=%.2f present=%.2f | frame=%.2fms %.0ffps\n",
+				w, h, aC/n, aG/n, aR/n, aP/n, aW/n, aW>0?1000.0f/(aW/n):0.0f);
+			aR=aP=aG=aC=aW=0; n=0;
+		}
+	}
 }
 
 /*
@@ -305,9 +320,12 @@ _psPresent(void)
 void
 psCameraShowRaster(RwCamera *camera)
 {
-	// librw's GBM showRaster is just glFinish (no swap); the actual present is
-	// the readback + output below.
+	// librw's GBM showRaster is just glFinish (no swap). Time it: this is where
+	// asynchronous GPU scene rendering is actually waited on, isolating
+	// GPU-bound cost from CPU submit and readback.
+	double t0 = psTimer();
 	RwCameraShowRaster(camera, PSGLOBAL(window), rwRASTERFLIPDONTWAIT);
+	gGpuMs = psTimer() - t0;
 
 	_psPresent();
 
@@ -1864,7 +1882,16 @@ main(int argc, char *argv[])
 						if ( RwInitialised )
 						{
 							if (!CMenuManager::m_PrefsFrameLimiter || (1000.0f / (float)RsGlobal.maxFPS) < ms)
+							{
+								// rsIDLE runs the whole frame (update + render +
+								// showRaster + present). CPU-only work = total minus
+								// the GPU wait and readback/present measured in
+								// psCameraShowRaster (feeds the HUD, docs/03).
+								double idle0 = psTimer();
 								RsEventHandler(rsIDLE, (void *)TRUE);
+								gCpuMs = (psTimer() - idle0) - gGpuMs - gReadMs - gPresentMs;
+								if (gCpuMs < 0.0) gCpuMs = 0.0;
+							}
 						}
 						break;
 					}
