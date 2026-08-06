@@ -119,10 +119,17 @@ void joysChangeCB(int jid, int event);
 #define GLFW_GAMEPAD_BUTTON_DPAD_DOWN		13
 #define GLFW_GAMEPAD_BUTTON_DPAD_LEFT		14
 
-// no-op input stubs (window arg is void* under GBM)
-inline void glfwGetCursorPos(void *, double *xpos, double *ypos) { if (xpos) *xpos = 0.0; if (ypos) *ypos = 0.0; }
-inline int glfwGetMouseButton(void *, int) { return 0; }
-inline void glfwSetCursorPos(void *, double, double) {}
+// Mouse state, fed by an input source that has a real pointer (input_sdl.cpp).
+// Defined in gbm.cpp so fbdev/spi builds (no SDL) link too, staying at 0 =
+// "no mouse" which is the correct behaviour there. gGbmMouseButtons is a
+// bitmask indexed by the GLFW_MOUSE_BUTTON_* constants above.
+extern double gGbmMouseX, gGbmMouseY;
+extern int    gGbmMouseButtons;
+
+// glfw* mouse/cursor shim backed by the globals above (window arg is void*).
+inline void glfwGetCursorPos(void *, double *xpos, double *ypos) { if (xpos) *xpos = gGbmMouseX; if (ypos) *ypos = gGbmMouseY; }
+inline int glfwGetMouseButton(void *, int btn) { return (gGbmMouseButtons >> btn) & 1; }
+inline void glfwSetCursorPos(void *, double x, double y) { gGbmMouseX = x; gGbmMouseY = y; }
 inline void glfwSetInputMode(void *, int, int) {}
 inline int glfwJoystickPresent(int) { return 0; }
 inline const unsigned char *glfwGetJoystickButtons(int, int *count) { if (count) *count = 0; return 0; }

@@ -16,8 +16,12 @@
 
 #include "common.h"
 #include "skeleton.h"
+#include "crossplatform.h"	// gGbmMouse* shim state
+#include "platform.h"		// PSGLOBAL
+#include "Frontend.h"		// FrontEndMenuManager.m_bMenuActive
 
 static int sKeymap[SDL_NUM_SCANCODES];
+bool gInGameMouseCapture = false;	// SDL relative-mouse state (in-game look)
 
 static void
 build_keymap(void)
@@ -64,17 +68,17 @@ sdlin_init(void)
 	if (!SDL_WasInit(SDL_INIT_VIDEO))
 		SDL_InitSubSystem(SDL_INIT_VIDEO);
 	build_keymap();
-	printf("input: SDL keyboard\n");
+	printf("input: SDL keyboard + mouse\n");
 }
 
 static void
 sdlin_poll(void)
 {
-	// Note: the SDL sink also pumps SDL_QUIT; we peek key events here without
-	// draining quit handling. Use SDL_PeepEvents for key events only.
 	SDL_PumpEvents();
-	SDL_Event evs[32];
-	int n = SDL_PeepEvents(evs, 32, SDL_GETEVENT, SDL_KEYDOWN, SDL_KEYUP);
+
+	// Keyboard: peek key events only (the sink drains SDL_QUIT separately).
+	SDL_Event evs[64];
+	int n = SDL_PeepEvents(evs, 64, SDL_GETEVENT, SDL_KEYDOWN, SDL_KEYUP);
 	for (int i = 0; i < n; i++) {
 		SDL_Scancode sc = evs[i].key.keysym.scancode;
 		if (sc >= SDL_NUM_SCANCODES)
@@ -89,6 +93,43 @@ sdlin_poll(void)
 			RsKeyboardEventHandler(rsKEYUP, &rs);
 		}
 	}
+
+	// Mouse: feed the crossplatform.h glfw* shim so Pad.cpp's mouse read works
+	// (camera look / aim / frontend cursor). Pad.cpp derives delta from
+	// lastMousePos. In menus we want absolute window coords; in-game we want
+	// unbounded relative motion for camera look, so switch SDL to relative mode
+	// and accumulate deltas into the shim position (delta == raw motion).
+	bool wantRelative = !FrontEndMenuManager.m_bMenuActive;
+	if (wantRelative != gInGameMouseCapture) {
+		SDL_SetRelativeMouseMode(wantRelative ? SDL_TRUE : SDL_FALSE);
+		gInGameMouseCapture = wantRelative;
+	}
+
+	int mx = 0, my = 0;
+	Uint32 btn;
+	if (wantRelative) {
+		int dx = 0, dy = 0;
+		btn = SDL_GetRelativeMouseState(&dx, &dy);
+		gGbmMouseX += (double)dx;
+		gGbmMouseY += (double)dy;
+	} else {
+		btn = SDL_GetMouseState(&mx, &my);
+		gGbmMouseX = (double)mx;
+		gGbmMouseY = (double)my;
+	}
+	gGbmMouseButtons =
+		((btn & SDL_BUTTON(SDL_BUTTON_LEFT))   ? (1 << GLFW_MOUSE_BUTTON_LEFT)   : 0) |
+		((btn & SDL_BUTTON(SDL_BUTTON_RIGHT))  ? (1 << GLFW_MOUSE_BUTTON_RIGHT)  : 0) |
+		((btn & SDL_BUTTON(SDL_BUTTON_MIDDLE)) ? (1 << GLFW_MOUSE_BUTTON_MIDDLE) : 0) |
+		((btn & SDL_BUTTON(SDL_BUTTON_X1))     ? (1 << GLFW_MOUSE_BUTTON_4)      : 0) |
+		((btn & SDL_BUTTON(SDL_BUTTON_X2))     ? (1 << GLFW_MOUSE_BUTTON_5)      : 0);
+	PSGLOBAL(cursorIsInWindow) = TRUE;	// single fullscreen-ish debug window
+
+	// Mouse wheel (Pad.cpp reads PSGLOBAL(mouseWheel), resets it each frame).
+	SDL_Event wev[16];
+	int wn = SDL_PeepEvents(wev, 16, SDL_GETEVENT, SDL_MOUSEWHEEL, SDL_MOUSEWHEEL);
+	for (int i = 0; i < wn; i++)
+		PSGLOBAL(mouseWheel) = (double)wev[i].wheel.y;
 }
 
 static void

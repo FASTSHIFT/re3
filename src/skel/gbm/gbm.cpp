@@ -90,6 +90,12 @@ static RwInt32 bestWndMode = -1;
 
 static psGlobalType PsGlobal;
 
+// Mouse state shared with the crossplatform.h glfw* shim. An input source with
+// a real pointer (input_sdl.cpp) updates these; on fbdev/spi they stay 0
+// (no mouse). See crossplatform.h.
+double gGbmMouseX = 0.0, gGbmMouseY = 0.0;
+int    gGbmMouseButtons = 0;
+
 
 #define PSGLOBAL(var) (((psGlobalType *)(RsGlobal.ps))->var)
 

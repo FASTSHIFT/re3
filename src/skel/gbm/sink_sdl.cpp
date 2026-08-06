@@ -88,12 +88,13 @@ sdl_present(const uint8_t *rgba, int w, int h)
 	if (sRen == 0 || sTex == 0 || sRGBX == 0)
 		return;
 
-	// Pump events so the window stays responsive; window close -> quit.
-	SDL_Event ev;
-	while (SDL_PollEvent(&ev)) {
-		if (ev.type == SDL_QUIT)
-			RsGlobal.quit = TRUE;
-	}
+	// Handle only window-close here. Do NOT drain all events: the input source
+	// (input_sdl.cpp) peeks key/mouse/wheel events, so we must leave those in
+	// the queue. Pump once, then take only SDL_QUIT.
+	SDL_PumpEvents();
+	SDL_Event qev[4];
+	if (SDL_PeepEvents(qev, 4, SDL_GETEVENT, SDL_QUIT, SDL_QUIT) > 0)
+		RsGlobal.quit = TRUE;
 
 	// Flip bottom-up GL readback to top-down. SDL_PIXELFORMAT_RGB888 on a
 	// little-endian host is stored as bytes B,G,R,X per pixel.
