@@ -42,9 +42,9 @@ static GpioKey sKeys[GK_COUNT] = {
 	{ "RE3_KEY_DOWN",   20 },	// dpad down  -> LeftStick down + DPadDown
 	{ "RE3_KEY_LEFT",   21 },	// dpad left  -> LeftStick left + DPadLeft
 	{ "RE3_KEY_RIGHT",  13 },	// dpad right -> LeftStick right + DPadRight
-	{ "RE3_KEY_Y",       2 },	// face Y     -> RightStick up (in-game) / DPadUp (menu)
+	{ "RE3_KEY_Y",      17 },	// face Y     -> RightStick up (in-game) / DPadUp (menu)
 	{ "RE3_KEY_A",      23 },	// face A     -> RightStick down / DPadDown
-	{ "RE3_KEY_X",       3 },	// face X     -> RightStick left / DPadLeft
+	{ "RE3_KEY_X",      22 },	// face X     -> RightStick left / DPadLeft
 	{ "RE3_KEY_B",       4 },	// face B     -> RightStick right / DPadRight
 	{ "RE3_KEY_SELECT", 16 },	// SELECT     -> Triangle (enter/exit vehicle)
 	{ "RE3_KEY_START",  26 },	// START      -> Cross (confirm); long->ESC
