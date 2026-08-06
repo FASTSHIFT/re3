@@ -1,21 +1,9 @@
 /*
  * input_gpio.cpp - GPIO physical-button input (docs/08 method A).
- *
- * Mapping (BCM pins, active-low, pull-up):
- *   UP/DOWN/LEFT/RIGHT (12/20/21/13) - move (LeftStick+DPad always)
- *   Y(12) A(20) X(21) B(13) - in GAME: camera look (RightStick); in MENU: DPad
- *   Actually Y=camera up, A=camera down, X=camera left, B=camera right.
- *   Uses GK_Y/A/X/B pins separate from direction pad -- see pin assignment below.
- *
- * Button -> game action:
- *   YAXB    - camera look (RightStick) in-game; DPad nav in menu
- *   UP/DOWN/LEFT/RIGHT - move/navigate (LeftStick + DPad always)
- *   L       - fire / shoot (Circle)
- *   R       - aim / target (LeftShoulder1)
- *   SELECT  - enter/exit vehicle / interact (Triangle)
- *   START   - confirm / jump (Cross); long-press (>600ms) -> ESC (back)
+ * ...
+ * Active in SPI builds (RE3_OUTPUT_SPI). Compatible with evdev being also active.
  */
-#if defined RW_GL3 && defined LIBRW_GBM && defined(RE3_OUTPUT_SPI) && !defined(RE3_INPUT_EVDEV) && !defined(RE3_INPUT_SDL)
+#if defined RW_GL3 && defined LIBRW_GBM && defined(RE3_OUTPUT_SPI)
 
 #include "input_source.h"
 
@@ -171,6 +159,10 @@ static void gpio_terminate(void) {}
 
 static InputSource sSrc = { gpio_init, gpio_poll, gpio_terminate, gpio_capturePad, "gpio" };
 
-InputSource *InputSource_Get(void) { return &sSrc; }
+// Self-register so the registry dispatches to us regardless of other sources.
+// Use a static init trick via a dummy variable to run at startup.
+static struct GpioAutoReg {
+	GpioAutoReg() { InputSource_Register(&sSrc); }
+} sAutoReg;
 
 #endif

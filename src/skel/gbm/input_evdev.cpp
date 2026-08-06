@@ -1,16 +1,9 @@
 /*
  * input_evdev.cpp - InputSource reading a keyboard via evdev (/dev/input).
- *
- * Opens all keyboard-capable /dev/input/event* devices, translates Linux KEY_*
- * codes to re3 RsKeyCodes, and feeds RsKeyboardEventHandler(rsKEYDOWN/rsKEYUP).
- * Reuses re3's whole keyboard->CPad chain (events.cpp), so menus and in-game
- * controls both work. Non-blocking reads, polled once per frame.
- *
- * Needs read permission on /dev/input/event* (run in the 'input' group).
- *
- * Active when RE3_INPUT_EVDEV is defined (and not RE3_INPUT_SDL).
+ * ...
+ * Active when RE3_INPUT_EVDEV is defined.
  */
-#if defined RW_GL3 && defined LIBRW_GBM && defined(RE3_INPUT_EVDEV) && !defined(RE3_INPUT_SDL)
+#if defined RW_GL3 && defined LIBRW_GBM && defined(RE3_INPUT_EVDEV)
 
 #include "input_source.h"
 
@@ -259,6 +252,8 @@ evdev_terminate(void)
 
 static InputSource sSrc = { evdev_init, evdev_poll, evdev_terminate, 0, "evdev" };
 
-InputSource *InputSource_Get(void) { return &sSrc; }
+static struct EvdevAutoReg {
+	EvdevAutoReg() { InputSource_Register(&sSrc); }
+} sAutoReg;
 
 #endif

@@ -224,7 +224,6 @@ psCameraBeginUpdate(RwCamera *camera)
  * the frame (fbdev / spi / sdl, selected at build time). See output_sink.h.
  */
 static OutputSink	*gSink = nil;
-static InputSource	*gInput = nil;
 static uint16		*gReadback565 = nil;	// glReadPixels dst (RGB565, display-native)
 static int			gReadbackW = 0, gReadbackH = 0;
 
@@ -706,10 +705,7 @@ void
 psTerminate(void)
 {
 	_psCloseOutput();
-	if (gInput != nil) {
-		gInput->terminate();
-		gInput = nil;
-	}
+	InputSource_TerminateAll();
 	return;
 }
 
@@ -1067,9 +1063,7 @@ void psPostRWinit(void)
 
 	_InputInitialiseJoys();
 	_InputInitialiseMouse();
-
-	gInput = InputSource_Get();
-	gInput->init();
+	InputSource_InitAll();
 
 	// Make sure all keys are released
 	CPad::GetPad(0)->Clear(true);
@@ -1673,10 +1667,8 @@ main(int argc, char *argv[])
 #endif
 		{
 			// No window system: no event pump. Quit is driven by RsGlobal.quit
-			// (set by SIGTERM handler or game logic). Poll the pluggable input
-			// source (evdev/sdl keyboard; gpio injects via CapturePad instead).
-			if (gInput != nil)
-				gInput->poll();
+			// Poll all registered input sources each frame.
+			InputSource_PollAll();
 #ifndef MASTER
 			if (gbModelViewer) {
 				// This is TheModelViewerCore in LCS, but TheModelViewer on other state-machine III-VCs.
@@ -2045,7 +2037,6 @@ RwV2d rightStickPos;
 // and leave this hook null.
 void CapturePad(RwInt32 padID)
 {
-	if (gInput != nil && gInput->capturePad != nil)
-		gInput->capturePad((int)padID);
+	InputSource_CapturePadAll((int)padID);
 }
 #endif

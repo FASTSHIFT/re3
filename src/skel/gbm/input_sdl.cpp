@@ -141,6 +141,8 @@ sdlin_terminate(void)
 
 static InputSource sSrc = { sdlin_init, sdlin_poll, sdlin_terminate, 0, "sdl" };
 
-InputSource *InputSource_Get(void) { return &sSrc; }
+static struct SdlInputAutoReg {
+	SdlInputAutoReg() { InputSource_Register(&sSrc); }
+} sAutoReg;
 
 #endif

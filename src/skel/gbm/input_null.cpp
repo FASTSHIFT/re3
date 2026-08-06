@@ -17,6 +17,8 @@ static void null_terminate(void) {}
 
 static InputSource sSrc = { null_init, null_poll, null_terminate, 0, "null" };
 
-InputSource *InputSource_Get(void) { return &sSrc; }
+static struct NullAutoReg {
+	NullAutoReg() { InputSource_Register(&sSrc); }
+} sAutoReg;
 
 #endif
