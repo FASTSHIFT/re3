@@ -34,6 +34,8 @@ static const Glyph kFont[] = {
 	{':', {0x00,0x36,0x36,0x00,0x00}},
 	{'%', {0x23,0x13,0x08,0x64,0x62}},
 	{'-', {0x08,0x08,0x08,0x08,0x08}},
+	{'(', {0x00,0x1C,0x22,0x41,0x00}},
+	{')', {0x00,0x41,0x22,0x1C,0x00}},
 	{'C', {0x3E,0x41,0x41,0x41,0x22}},
 	{'P', {0x7F,0x09,0x09,0x09,0x06}},
 	{'U', {0x3F,0x40,0x40,0x40,0x3F}},
@@ -95,12 +97,12 @@ void Hud_Update(const HudMetrics *m)
 	double fps = sM.frameMs > 0.0 ? 1000.0 / sM.frameMs : 0.0;
 
 	sNumLines = 0;
-	snprintf(sLines[sNumLines++], sizeof(sLines[0]), "FPS-%.0f-%.1fMS", fps, sM.frameMs);
-	snprintf(sLines[sNumLines++], sizeof(sLines[0]), "CPU-%.1f", sM.cpuMs);
-	snprintf(sLines[sNumLines++], sizeof(sLines[0]), "GPU-%.1f", sM.gpuMs);
-	snprintf(sLines[sNumLines++], sizeof(sLines[0]), "CPY-%.1f", sM.readMs + sM.presentMs);
+	snprintf(sLines[sNumLines++], sizeof(sLines[0]), "FPS: %.0f (%.0fMS)", fps, sM.frameMs);
+	snprintf(sLines[sNumLines++], sizeof(sLines[0]), "CPU: %.1f", sM.cpuMs);
+	snprintf(sLines[sNumLines++], sizeof(sLines[0]), "GPU: %.1f", sM.gpuMs);
+	snprintf(sLines[sNumLines++], sizeof(sLines[0]), "CPY: %.1f", sM.readMs + sM.presentMs);
 	if (tempMilli >= 0)
-		snprintf(sLines[sNumLines++], sizeof(sLines[0]), "TMP-%.1fC", tempMilli / 1000.0);
+		snprintf(sLines[sNumLines++], sizeof(sLines[0]), "TMP: %.1fC", tempMilli / 1000.0);
 }
 
 // ---- drawing --------------------------------------------------------------
