@@ -272,18 +272,21 @@ _psPresent(void)
 	if (timeOn < 0) timeOn = getenv("RE3_TIME_PRESENT") ? 1 : 0;
 
 	if (timeOn) {
-		static double accRead = 0, accPres = 0; static int frames = 0;
+		static double accRead = 0, accPres = 0, lastWall = 0, accWall = 0;
+		static int frames = 0;
 		double t0 = psTimer();
+		if (lastWall != 0) accWall += t0 - lastWall;	// wall time between frames
+		lastWall = t0;
 		glReadPixels(0, 0, w, h, GL_RGBA, GL_UNSIGNED_BYTE, gReadbackRGBA);
 		double t1 = psTimer();
 		gSink->present(gReadbackRGBA, w, h);
 		double t2 = psTimer();
 		accRead += t1 - t0; accPres += t2 - t1;
 		if (++frames >= 120) {
-			printf("[present] %dx%d glReadPixels=%.2fms present=%.2fms total=%.2fms (%.0f fps cap)\n",
-				w, h, accRead/frames, accPres/frames, (accRead+accPres)/frames,
-				1000.0f/((accRead+accPres)/frames));
-			accRead = accPres = 0; frames = 0;
+			printf("[present] %dx%d glReadPixels=%.2f present=%.2f | frame-to-frame=%.2fms => REAL %.0f fps\n",
+				w, h, accRead/frames, accPres/frames, accWall/frames,
+				accWall > 0 ? 1000.0f/(accWall/frames) : 0.0f);
+			accRead = accPres = accWall = 0; frames = 0;
 		}
 		return;
 	}
@@ -749,13 +752,13 @@ RwChar **_psGetVideoModeList()
 		
 		RwEngineGetVideoModeInfo(&vm, i);
 		
-		if ( vm.flags & rwVIDEOMODEEXCLUSIVE )
-		{
-			_VMList[i] = (RwChar*)RwCalloc(100, sizeof(RwChar));
-			rwsprintf(_VMList[i],"%d X %d X %d", vm.width, vm.height, vm.depth);
-		}
-		else
-			_VMList[i] = nil;
+		// GBM exposes a single offscreen mode with no rwVIDEOMODEEXCLUSIVE flag.
+		// The desktop skeletons only list exclusive (fullscreen) modes and leave
+		// windowed ones nil, but the Display Settings menu does
+		// AsciiToUnicode(_psGetVideoModeList()[m_nDisplayVideoMode], ...) which
+		// dereferences the entry -> null deref / crash. Always provide a string.
+		_VMList[i] = (RwChar*)RwCalloc(100, sizeof(RwChar));
+		rwsprintf(_VMList[i],"%d X %d X %d", vm.width, vm.height, vm.depth);
 	}
 	
 	return _VMList;
