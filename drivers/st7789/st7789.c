@@ -64,6 +64,19 @@ struct st7789 {
 
 /* ---- low-level helpers ---- */
 
+/* Read the kernel's spidev bufsiz (max bytes per ioctl transfer). Returns the
+ * value, or a conservative 4096 if it can't be read. */
+static uint32_t read_spidev_bufsiz(void)
+{
+    FILE* f = fopen("/sys/module/spidev/parameters/bufsiz", "r");
+    if (!f)
+        return 4096u;
+    long v = 0;
+    int ok = (fscanf(f, "%ld", &v) == 1);
+    fclose(f);
+    return (ok && v > 0) ? (uint32_t)v : 4096u;
+}
+
 static void delay_ms(unsigned int ms)
 {
     struct timespec ts;
@@ -323,6 +336,20 @@ st7789_t* st7789_open(const st7789_config_t* cfg)
             perror("st7789: SPI_IOC_WR_BITS_PER_WORD");
         if (ioctl(d->spi_fd, SPI_IOC_WR_MAX_SPEED_HZ, &d->spi_hz) < 0)
             perror("st7789: SPI_IOC_WR_MAX_SPEED_HZ");
+    }
+
+    /* Clamp chunk to the kernel's spidev bufsiz: a transfer larger than bufsiz
+     * fails with EMSGSIZE. Without this, large frames silently fail on systems
+     * where bufsiz is left at the 4096 default. */
+    {
+        uint32_t bufsiz = read_spidev_bufsiz();
+        if (d->chunk_bytes > bufsiz) {
+            fprintf(stderr,
+                "st7789: chunk %u > spidev bufsiz %u; clamping to %u "
+                "(raise it via 'spidev.bufsiz=...' boot cmdline for best perf)\n",
+                d->chunk_bytes, bufsiz, bufsiz);
+            d->chunk_bytes = bufsiz;
+        }
     }
 
     if (panel_init(d, cfg->invert) < 0)

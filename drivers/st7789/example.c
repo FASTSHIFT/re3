@@ -47,21 +47,26 @@ int main(int argc, char** argv)
     }
 
     /* Alternate black/white full frames and measure fps. */
+    int done = 0;
     double t0 = now_sec();
     for (int i = 0; i < frames; i++) {
         uint16_t c = (i & 1) ? 0xFFFF : 0x0000;
         for (int p = 0; p < w * h; p++)
             fb[p] = c;
         if (st7789_flush(dev, fb) < 0) {
-            fprintf(stderr, "flush failed\n");
+            fprintf(stderr, "flush failed at frame %d\n", i);
             break;
         }
+        done++;
     }
     double dt = now_sec() - t0;
 
-    printf("frames=%d  %.1f fps  %.3f ms/frame  %.2f MB/s\n",
-        frames, frames / dt, dt / frames * 1e3,
-        (double)w * h * 2 * frames / dt / (1024.0 * 1024.0));
+    if (done > 0)
+        printf("frames=%d  %.1f fps  %.3f ms/frame  %.2f MB/s\n",
+            done, done / dt, dt / done * 1e3,
+            (double)w * h * 2 * done / dt / (1024.0 * 1024.0));
+    else
+        fprintf(stderr, "no frames pushed successfully\n");
 
     free(fb);
     st7789_close(dev);

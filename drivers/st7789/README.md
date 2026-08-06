@@ -79,8 +79,16 @@ CS is driven by GPIO; SPI runs with `SPI_NO_CS`.
 
 ## Prerequisites on the Pi
 
-- `dtparam=spi=on` in config.txt (creates `/dev/spidev0.0`).
-- User in the `gpio` and `spi` groups (root-free operation).
+Run the one-time provisioning once per fresh OS image (see `SETUP.md`):
+
+```bash
+sudo ./setup_pi.sh && sudo reboot
+```
+
+This enables SPI, persists `spidev.bufsiz`, locks `core_freq`, pins the
+`performance` CPU governor, and adds the user to the `gpio`/`spi` groups.
+The driver clamps its transfer chunk to the kernel `bufsiz` automatically, so it
+still works (just slower) if bufsiz is left at the 4096 default.
 
 ## Integration hand-off (for API layer)
 
