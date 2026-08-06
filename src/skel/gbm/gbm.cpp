@@ -91,10 +91,31 @@ static RwInt32 bestWndMode = -1;
 static psGlobalType PsGlobal;
 
 // Mouse state shared with the crossplatform.h glfw* shim. An input source with
-// a real pointer (input_sdl.cpp) updates these; on fbdev/spi they stay 0
-// (no mouse). See crossplatform.h.
+// a real pointer (input_sdl.cpp / input_evdev.cpp) updates these via
+// GbmFeedMouse(); on spi they stay 0 (no mouse). See crossplatform.h.
 double gGbmMouseX = 0.0, gGbmMouseY = 0.0;
 int    gGbmMouseButtons = 0;
+
+// Feed absolute mouse position (in render/screen pixels), button bitmask
+// (indexed by GLFW_MOUSE_BUTTON_*), and wheel delta into re3. Updates the
+// glfw* shim state (Pad.cpp reads it for in-game camera) and the frontend
+// cursor position (FrontEndMenuManager). Call once per frame from an input
+// source that has a pointer. Defined here so all input backends can share it.
+void GbmFeedMouse(double x, double y, int buttons, int wheel, bool inWindow)
+{
+	gGbmMouseX = x;
+	gGbmMouseY = y;
+	gGbmMouseButtons = buttons;
+	PSGLOBAL(cursorIsInWindow) = inWindow ? TRUE : FALSE;
+	if (wheel != 0)
+		PSGLOBAL(mouseWheel) = (double)wheel;
+
+	// Frontend cursor (menu hit-testing) reads m_nMousePosX/Y, copied from
+	// these temp fields each frame (see CMenuManager). Scale window coords to
+	// the menu's screen space.
+	FrontEndMenuManager.m_nMouseTempPosX = (int)x;
+	FrontEndMenuManager.m_nMouseTempPosY = (int)y;
+}
 
 
 #define PSGLOBAL(var) (((psGlobalType *)(RsGlobal.ps))->var)

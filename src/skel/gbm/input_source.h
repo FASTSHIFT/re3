@@ -33,4 +33,9 @@ struct InputSource
 // static source (never null; a no-op source if none is configured).
 InputSource *InputSource_Get(void);
 
+// Feed absolute mouse state into re3 (implemented in gbm.cpp; shared by input
+// sources that have a pointer). x/y in screen pixels, buttons is a bitmask
+// indexed by the GLFW_MOUSE_BUTTON_* constants, wheel is a per-frame delta.
+void GbmFeedMouse(double x, double y, int buttons, int wheel, bool inWindow);
+
 #endif /* RE3_INPUT_SOURCE_H */

@@ -94,42 +94,41 @@ sdlin_poll(void)
 		}
 	}
 
-	// Mouse: feed the crossplatform.h glfw* shim so Pad.cpp's mouse read works
-	// (camera look / aim / frontend cursor). Pad.cpp derives delta from
-	// lastMousePos. In menus we want absolute window coords; in-game we want
-	// unbounded relative motion for camera look, so switch SDL to relative mode
-	// and accumulate deltas into the shim position (delta == raw motion).
+	// Mouse: in menus use absolute window coords; in-game use SDL relative-mouse
+	// mode for unbounded camera look (matches the original GLFW_CURSOR_DISABLED).
 	bool wantRelative = !FrontEndMenuManager.m_bMenuActive;
 	if (wantRelative != gInGameMouseCapture) {
 		SDL_SetRelativeMouseMode(wantRelative ? SDL_TRUE : SDL_FALSE);
 		gInGameMouseCapture = wantRelative;
 	}
 
-	int mx = 0, my = 0;
+	static double px = 0, py = 0;
 	Uint32 btn;
 	if (wantRelative) {
 		int dx = 0, dy = 0;
 		btn = SDL_GetRelativeMouseState(&dx, &dy);
-		gGbmMouseX += (double)dx;
-		gGbmMouseY += (double)dy;
+		px += (double)dx;
+		py += (double)dy;
 	} else {
+		int mx = 0, my = 0;
 		btn = SDL_GetMouseState(&mx, &my);
-		gGbmMouseX = (double)mx;
-		gGbmMouseY = (double)my;
+		px = (double)mx;
+		py = (double)my;
 	}
-	gGbmMouseButtons =
+	int buttons =
 		((btn & SDL_BUTTON(SDL_BUTTON_LEFT))   ? (1 << GLFW_MOUSE_BUTTON_LEFT)   : 0) |
 		((btn & SDL_BUTTON(SDL_BUTTON_RIGHT))  ? (1 << GLFW_MOUSE_BUTTON_RIGHT)  : 0) |
 		((btn & SDL_BUTTON(SDL_BUTTON_MIDDLE)) ? (1 << GLFW_MOUSE_BUTTON_MIDDLE) : 0) |
 		((btn & SDL_BUTTON(SDL_BUTTON_X1))     ? (1 << GLFW_MOUSE_BUTTON_4)      : 0) |
 		((btn & SDL_BUTTON(SDL_BUTTON_X2))     ? (1 << GLFW_MOUSE_BUTTON_5)      : 0);
-	PSGLOBAL(cursorIsInWindow) = TRUE;	// single fullscreen-ish debug window
 
-	// Mouse wheel (Pad.cpp reads PSGLOBAL(mouseWheel), resets it each frame).
+	int wheel = 0;
 	SDL_Event wev[16];
 	int wn = SDL_PeepEvents(wev, 16, SDL_GETEVENT, SDL_MOUSEWHEEL, SDL_MOUSEWHEEL);
 	for (int i = 0; i < wn; i++)
-		PSGLOBAL(mouseWheel) = (double)wev[i].wheel.y;
+		wheel = wev[i].wheel.y;
+
+	GbmFeedMouse(px, py, buttons, wheel, true);
 }
 
 static void

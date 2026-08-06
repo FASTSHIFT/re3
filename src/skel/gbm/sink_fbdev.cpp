@@ -52,9 +52,43 @@ fbdev_init(int renderW, int renderH)
 	return true;
 }
 
+// Debug: dump frames to PPM when RE3_FB_DUMP=<dir> (headless verification when
+// fb0 can't be seen, e.g. the desktop owns it). Writes frameNNNN.ppm.
+static void
+fbdev_dump(const uint8_t *rgba, int w, int h)
+{
+	static const char *dir = 0;
+	static int init = 0, n = 0, every = 60;
+	if (!init) {
+		init = 1;
+		dir = getenv("RE3_FB_DUMP");
+		const char *ev = getenv("RE3_FB_DUMP_EVERY");
+		if (ev) every = atoi(ev);
+		if (every < 1) every = 1;
+	}
+	if (dir == 0) return;
+	if ((n % every) == 0) {
+		char path[512];
+		snprintf(path, sizeof(path), "%s/frame%04d.ppm", dir, n / every);
+		FILE *f = fopen(path, "wb");
+		if (f) {
+			fprintf(f, "P6\n%d %d\n255\n", w, h);
+			for (int y = 0; y < h; y++) {
+				const uint8_t *srcRow = rgba + (h - 1 - y) * w * 4;	// flip
+				for (int x = 0; x < w; x++)
+					fwrite(srcRow + x * 4, 1, 3, f);
+			}
+			fclose(f);
+		}
+	}
+	n++;
+}
+
 static void
 fbdev_present(const uint8_t *rgba, int w, int h)
 {
+	fbdev_dump(rgba, w, h);
+
 	if (sMem == 0)
 		return;	// no display; readback already exercised the pipeline
 

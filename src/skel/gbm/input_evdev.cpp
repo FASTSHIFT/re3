@@ -24,11 +24,18 @@
 
 #include "common.h"
 #include "skeleton.h"
+#include "crossplatform.h"	// GLFW_MOUSE_BUTTON_* constants
 
 #define EVDEV_MAX_FDS 8
-static int sFds[EVDEV_MAX_FDS];
+static int sFds[EVDEV_MAX_FDS];		// keyboard fds
 static int sNumFds = 0;
+static int sMouseFds[EVDEV_MAX_FDS];	// mouse/pointer fds
+static int sNumMouseFds = 0;
 static int sKeymap[KEY_MAX + 1];	// KEY_* -> RsKeyCodes (0 = unmapped)
+
+// Accumulated absolute mouse position (render/screen pixels) and button state.
+static double sMouseX = 0, sMouseY = 0;
+static int sMouseButtons = 0;
 
 static void
 build_keymap(void)
@@ -101,11 +108,38 @@ is_keyboard(int fd)
 	return have >= 3;
 }
 
+// A relative pointer: has EV_REL with REL_X/REL_Y and a mouse button.
+static bool
+is_mouse(int fd)
+{
+	unsigned long evbits[(EV_MAX + 8*sizeof(long)) / (8*sizeof(long))];
+	memset(evbits, 0, sizeof(evbits));
+	if (ioctl(fd, EVIOCGBIT(0, sizeof(evbits)), evbits) < 0)
+		return false;
+	if (!(evbits[EV_REL / (8*sizeof(long))] & (1UL << (EV_REL % (8*sizeof(long))))))
+		return false;
+
+	unsigned long relbits[(REL_MAX + 8*sizeof(long)) / (8*sizeof(long))];
+	memset(relbits, 0, sizeof(relbits));
+	if (ioctl(fd, EVIOCGBIT(EV_REL, sizeof(relbits)), relbits) < 0)
+		return false;
+	bool hasX = relbits[REL_X / (8*sizeof(long))] & (1UL << (REL_X % (8*sizeof(long))));
+	bool hasY = relbits[REL_Y / (8*sizeof(long))] & (1UL << (REL_Y % (8*sizeof(long))));
+
+	unsigned long keybits[(KEY_MAX + 8*sizeof(long)) / (8*sizeof(long))];
+	memset(keybits, 0, sizeof(keybits));
+	ioctl(fd, EVIOCGBIT(EV_KEY, sizeof(keybits)), keybits);
+	bool hasBtn = keybits[BTN_LEFT / (8*sizeof(long))] & (1UL << (BTN_LEFT % (8*sizeof(long))));
+
+	return hasX && hasY && hasBtn;
+}
+
 static void
 evdev_init(void)
 {
 	build_keymap();
 	sNumFds = 0;
+	sNumMouseFds = 0;
 
 	DIR *dir = opendir("/dev/input");
 	if (dir == 0) {
@@ -113,7 +147,7 @@ evdev_init(void)
 		return;
 	}
 	struct dirent *de;
-	while ((de = readdir(dir)) != 0 && sNumFds < EVDEV_MAX_FDS) {
+	while ((de = readdir(dir)) != 0) {
 		if (strncmp(de->d_name, "event", 5) != 0)
 			continue;
 		char path[280];
@@ -121,25 +155,36 @@ evdev_init(void)
 		int fd = open(path, O_RDONLY | O_NONBLOCK);
 		if (fd < 0)
 			continue;
-		if (is_keyboard(fd)) {
-			char nm[128] = "?";
-			ioctl(fd, EVIOCGNAME(sizeof(nm)), nm);
+		char nm[128] = "?";
+		ioctl(fd, EVIOCGNAME(sizeof(nm)), nm);
+		if (is_keyboard(fd) && sNumFds < EVDEV_MAX_FDS) {
 			printf("evdev: keyboard %s (%s)\n", path, nm);
 			sFds[sNumFds++] = fd;
+		} else if (is_mouse(fd) && sNumMouseFds < EVDEV_MAX_FDS) {
+			printf("evdev: mouse %s (%s)\n", path, nm);
+			sMouseFds[sNumMouseFds++] = fd;
 		} else {
 			close(fd);
 		}
 	}
 	closedir(dir);
 
+	// Start the pointer near screen centre so the frontend cursor is visible.
+	sMouseX = RsGlobal.maximumWidth * 0.5;
+	sMouseY = RsGlobal.maximumHeight * 0.5;
+
 	if (sNumFds == 0)
 		printf("evdev: no keyboard in /dev/input (need read perm; 'input' group)\n");
+	if (sNumMouseFds == 0)
+		printf("evdev: no mouse in /dev/input\n");
 }
 
 static void
 evdev_poll(void)
 {
 	struct input_event ev[64];
+
+	// Keyboard.
 	for (int i = 0; i < sNumFds; i++) {
 		for (;;) {
 			ssize_t n = read(sFds[i], ev, sizeof(ev));
@@ -159,6 +204,46 @@ evdev_poll(void)
 			}
 		}
 	}
+
+	// Mouse: accumulate relative motion into an absolute position (clamped to
+	// the screen), track buttons and wheel, then feed re3.
+	int wheel = 0;
+	for (int i = 0; i < sNumMouseFds; i++) {
+		for (;;) {
+			ssize_t n = read(sMouseFds[i], ev, sizeof(ev));
+			if (n <= 0)
+				break;
+			int count = (int)(n / sizeof(struct input_event));
+			for (int j = 0; j < count; j++) {
+				if (ev[j].type == EV_REL) {
+					if (ev[j].code == REL_X) sMouseX += ev[j].value;
+					else if (ev[j].code == REL_Y) sMouseY += ev[j].value;
+					else if (ev[j].code == REL_WHEEL) wheel = ev[j].value;
+				} else if (ev[j].type == EV_KEY) {
+					int bit = -1;
+					switch (ev[j].code) {
+					case BTN_LEFT:   bit = GLFW_MOUSE_BUTTON_LEFT; break;
+					case BTN_RIGHT:  bit = GLFW_MOUSE_BUTTON_RIGHT; break;
+					case BTN_MIDDLE: bit = GLFW_MOUSE_BUTTON_MIDDLE; break;
+					case BTN_SIDE:   bit = GLFW_MOUSE_BUTTON_4; break;
+					case BTN_EXTRA:  bit = GLFW_MOUSE_BUTTON_5; break;
+					default: break;
+					}
+					if (bit >= 0) {
+						if (ev[j].value) sMouseButtons |= (1 << bit);
+						else sMouseButtons &= ~(1 << bit);
+					}
+				}
+			}
+		}
+	}
+	if (sMouseX < 0) sMouseX = 0;
+	if (sMouseY < 0) sMouseY = 0;
+	if (sMouseX > RsGlobal.maximumWidth)  sMouseX = RsGlobal.maximumWidth;
+	if (sMouseY > RsGlobal.maximumHeight) sMouseY = RsGlobal.maximumHeight;
+
+	if (sNumMouseFds > 0)
+		GbmFeedMouse(sMouseX, sMouseY, sMouseButtons, wheel, true);
 }
 
 static void
@@ -166,7 +251,10 @@ evdev_terminate(void)
 {
 	for (int i = 0; i < sNumFds; i++)
 		close(sFds[i]);
+	for (int i = 0; i < sNumMouseFds; i++)
+		close(sMouseFds[i]);
 	sNumFds = 0;
+	sNumMouseFds = 0;
 }
 
 static InputSource sSrc = { evdev_init, evdev_poll, evdev_terminate, 0, "evdev" };
