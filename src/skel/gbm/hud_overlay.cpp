@@ -224,11 +224,16 @@ Hud_Draw(uint16_t *rgb565, int w, int h)
 	const uint16_t fg = 0xFFFF; // white
 	const uint16_t bg = 0x0000; // black shadow
 
-	// Buffer is bottom-up; to make the block sit at the screen's TOP-LEFT and
-	// read top-to-bottom, place line i at buffer-y counting down from the top
-	// of the buffer (= screen top), with the first line highest on screen.
+	// Anchor the block to the LEFT-MIDDLE of the screen so it doesn't cover the
+	// game's own top-left prompts/messages. Buffer is bottom-up: screen top is
+	// high buffer-y. Start from the screen-top formula, then shift the whole
+	// block DOWN by (screenH - blockH)/2 screen pixels to centre it vertically
+	// (shifting down on screen = subtracting from buffer-y).
+	const int blockH = sNumLines * lineH;
+	int topOffset = (h - blockH) / 2; // screen pixels from top to block start
+	if(topOffset < 0) topOffset = 0;
 	for(int i = 0; i < sNumLines; i++) {
-		int y = h - 1 - glyphH - i * lineH; // screen-top anchor (buffer top)
+		int y = h - 1 - glyphH - topOffset - i * lineH; // left-middle anchor
 		if(y < 0) break;
 		draw_text(rgb565, w, h, 2, y - 1, sLines[i], s, bg); // shadow
 		draw_text(rgb565, w, h, 1, y, sLines[i], s, fg);
