@@ -9,13 +9,18 @@
 
 #include <stdio.h>
 #include <stdlib.h>
-#include <time.h>
 
 #include "common.h"
 #include "Pad.h"
 #include "Frontend.h" // FrontEndMenuManager.m_bMenuActive
-#include "skeleton.h" // RsKeyboardEventHandler, rsESC
 #include "pi_gpio.h"
+
+// Forward-declared to avoid pulling in PlayerInfo.h (which drags in CPtrList
+// and other engine headers). Returns the player's current vehicle, or nil when
+// on foot. Declared in PlayerInfo.h / defined in World.cpp.
+class CVehicle;
+CVehicle *
+FindPlayerVehicle(void);
 
 // ---- pin table ------------------------------------------------------------
 struct GpioKey {
@@ -52,20 +57,6 @@ static GpioKey sKeys[GK_COUNT] = {
     {"RE3_KEY_R", 6}        // R shoulder -> LeftShoulder1 (aim/target)
 };
 static bool sReady = false;
-
-// Long-press START tracking: hold >600ms triggers ESC.
-#define START_LONG_MS 600
-static int sStartWasDown = 0;
-static double sStartDownAt = 0.0;
-static int sStartLongFired = 0; // ESC injected, don't also send Cross
-
-static double
-mono_ms(void)
-{
-	struct timespec ts;
-	clock_gettime(CLOCK_MONOTONIC, &ts);
-	return ts.tv_sec * 1000.0 + ts.tv_nsec / 1e6;
-}
 
 // ---- init -----------------------------------------------------------------
 static void
@@ -106,6 +97,10 @@ gpio_capturePad(int padID)
 	CControllerState &s = pad->PCTempJoyState;
 
 	bool inMenu = !!FrontEndMenuManager.m_bMenuActive;
+	// "On foot" = actually in the game world and not in a vehicle. Only then do
+	// the face buttons act as a camera stick; in menus and while driving they
+	// behave as normal face buttons (so e.g. Cross = accelerate works in a car).
+	bool onFoot = !inMenu && FindPlayerVehicle() == nil;
 
 	// All writes below are OR-only (only set fields for buttons that are
 	// actually held). PCTempJoyState is cleared once by the registry before
@@ -123,18 +118,20 @@ gpio_capturePad(int padID)
 
 	// --- Face buttons YAXB ---
 	bool fy = p(GK_Y), fa = p(GK_A), fx = p(GK_X), fb = p(GK_B);
-	if(inMenu) {
-		// In menus, YAXB = DPad navigation (up/down/left/right).
-		// OR into the DPad that the dpad already set.
-		if(fy) { s.DPadUp = 255; }
-		if(fa) { s.DPadDown = 255; }
-		if(fx) { s.DPadLeft = 255; }
-		if(fb) { s.DPadRight = 255; }
-	} else {
-		// In-game: YAXB = camera look via RightStick.
+	if(onFoot) {
+		// On foot only: YAXB = camera look via RightStick.
 		// Y=up, A=down, X=left, B=right (full deflection ±128).
 		if(fy || fa) s.RightStickY = (int16)((fa ? 128 : 0) - (fy ? 128 : 0));
 		if(fx || fb) s.RightStickX = (int16)((fb ? 128 : 0) - (fx ? 128 : 0));
+	} else {
+		// Menus and in-vehicle: YAXB = normal PlayStation face buttons.
+		// Y=Triangle, A=Cross, X=Square, B=Circle. In a car this makes
+		// A=Cross=accelerate, B=Circle=brake/reverse work as expected; in
+		// menus Cross confirms and Triangle/Circle back out.
+		if(fy) s.Triangle = 255;
+		if(fa) s.Cross = 255;
+		if(fx) s.Square = 255;
+		if(fb) s.Circle = 255;
 	}
 
 	// --- Shoulders ---
@@ -145,28 +142,9 @@ gpio_capturePad(int padID)
 	// --- SELECT = Triangle (enter/exit vehicle, interact) ---
 	if(p(GK_SELECT)) s.Triangle = 255;
 
-	// --- START = Cross (confirm/jump); long-press -> ESC (back/pause) ---
-	bool startNow = p(GK_START);
-	if(startNow && !sStartWasDown) {
-		// just pressed
-		sStartDownAt = mono_ms();
-		sStartLongFired = 0;
-	}
-	if(startNow && !sStartLongFired) {
-		double held = mono_ms() - sStartDownAt;
-		if(held >= START_LONG_MS) {
-			// Long press: inject ESC and mark so we don't also send Cross.
-			int esc = rsESC;
-			RsKeyboardEventHandler(rsKEYDOWN, &esc);
-			RsKeyboardEventHandler(rsKEYUP, &esc);
-			sStartLongFired = 1;
-		}
-	}
-	if(!startNow && sStartWasDown && !sStartLongFired) {
-		// Short tap released: send Cross (confirm) on release.
-		s.Cross = 255;
-	}
-	sStartWasDown = startNow ? 1 : 0;
+	// --- START = Start (pause/resume the game; REGISTER_START_BUTTON). ---
+	// Also drives our metrics-overlay toggle on each pause (see below).
+	if(p(GK_START)) s.Start = 255;
 }
 
 static void
