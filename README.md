@@ -1,4 +1,4 @@
-<!-- LANG-SWITCH --> **简体中文** | [English](README.en.md) | [原始上游 README（备份）](README.upstream.md)
+**简体中文** | [English](README.en.md) | [原始上游 README（备份）](README.upstream.md)
 
 # re3 · 树莓派 ST7789 掌机移植与性能优化版
 

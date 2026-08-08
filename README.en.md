@@ -1,4 +1,4 @@
-<!-- LANG-SWITCH --> [简体中文](README.md) | **English** | [Original upstream README (backup)](README.upstream.md)
+[简体中文](README.md) | **English** | [Original upstream README (backup)](README.upstream.md)
 
 # re3 · Raspberry Pi ST7789 Handheld Port & Performance Optimization
 
