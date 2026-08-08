@@ -7,10 +7,13 @@
  *   - mouse    -> GbmFeedMouse (absolute pos accumulated from REL_X/Y)
  *   - gamepad  -> CPad::GetPad(0)->PCTempJoyState via capturePad()
  *
- * Hotplug: a single inotify watch on /dev/input picks up devices added or
- * removed at runtime (e.g. a controller connected after launch). Nodes that
- * error out on read (unplugged) are dropped from the table too. This runs
- * inside poll(), no extra thread.
+ * Hotplug: a netlink uevent socket (the mechanism udev/SDL use underneath)
+ * delivers kernel add@/remove@ events for /dev/input nodes at runtime, e.g. a
+ * controller connected after launch. The add@ event arrives once the device is
+ * ready (unlike inotify's IN_CREATE, which fires before the driver has probed),
+ * so no ready-retry workaround is needed. Nodes that error out on read
+ * (unplugged) are dropped too. Everything runs inside poll(), no extra thread.
+ * See docs/10.
  *
  * Gamepad mapping is based on the kernel's standard game controller layout
  * (BTN_SOUTH/EAST/..., ABS_X/Y/RX/RY, ABS_Z/RZ triggers, ABS_HAT0X/Y dpad),
@@ -30,7 +33,8 @@
 #include <unistd.h>
 #include <dirent.h>
 #include <sys/ioctl.h>
-#include <sys/inotify.h>
+#include <sys/socket.h>
+#include <linux/netlink.h>
 #include <linux/input.h>
 
 #include "common.h"
@@ -67,9 +71,44 @@ static double sMouseX = 0, sMouseY = 0;
 static int sMouseButtons = 0;
 static bool sHaveMouse = false;
 
-// inotify watch on /dev/input for hotplug.
-static int sInotifyFd = -1;
-static int sInotifyWatch = -1;
+// netlink uevent socket for hotplug (see docs/10). The kernel's add@ uevent is
+// broadcast once the input device itself is ready (unlike inotify's IN_CREATE
+// which fires before the driver has even probed). One subtlety remains: the
+// kernel announces add@ BEFORE udev applies the node's ACL/'input' group
+// permission, so the first open() can race and fail with EACCES. We therefore
+// queue add@ nodes for a few frames of retries (sPending) rather than relying
+// on a single immediate open; the permission lands within tens of ms.
+static int sUeventFd = -1;
+
+#define EVDEV_MAX_PENDING 8
+#define EVDEV_PENDING_TRIES 60 // frames; ~1-2s window covers the udev ACL delay
+struct Pending {
+	char node[32];
+	int tries;
+};
+static Pending sPending[EVDEV_MAX_PENDING];
+static int sNumPending = 0;
+
+static void
+pending_add(const char *node)
+{
+	for(int i = 0; i < sNumPending; i++)
+		if(strcmp(sPending[i].node, node) == 0) {
+			sPending[i].tries = EVDEV_PENDING_TRIES; // refresh window
+			return;
+		}
+	if(sNumPending >= EVDEV_MAX_PENDING) return;
+	snprintf(sPending[sNumPending].node, sizeof(sPending[sNumPending].node), "%s", node);
+	sPending[sNumPending].tries = EVDEV_PENDING_TRIES;
+	sNumPending++;
+}
+
+static void
+pending_remove_at(int idx)
+{
+	for(int i = idx; i < sNumPending - 1; i++) sPending[i] = sPending[i + 1];
+	sNumPending--;
+}
 
 static void
 build_keymap(void)
@@ -259,7 +298,13 @@ try_add_device(const char *node)
 	char path[280];
 	snprintf(path, sizeof(path), "/dev/input/%s", node);
 	int fd = open(path, O_RDONLY | O_NONBLOCK);
-	if(fd < 0) return false;
+	if(fd < 0) {
+		// EACCES here is expected on hotplug: the kernel broadcasts add@ before
+		// udev has applied the ACL/'input' group permission to the new node, so
+		// the very first open races and fails. The caller queues a short retry
+		// (see pending list); by the next attempt udev has set permissions.
+		return false;
+	}
 
 	char nm[128] = "?";
 	ioctl(fd, EVIOCGNAME(sizeof(nm)), nm);
@@ -321,17 +366,35 @@ evdev_init(void)
 {
 	build_keymap();
 	sNumDevs = 0;
+	sNumPending = 0;
 	sHaveMouse = false;
 
 	scan_all_devices();
 
-	// Hotplug watch: created/deleted device nodes in /dev/input.
-	sInotifyFd = inotify_init1(IN_NONBLOCK);
-	if(sInotifyFd >= 0) {
-		sInotifyWatch = inotify_add_watch(sInotifyFd, "/dev/input", IN_CREATE | IN_DELETE);
-		if(sInotifyWatch < 0) printf("evdev: inotify watch failed (hotplug disabled)\n");
+	// Hotplug: subscribe to kernel uevents via netlink (group 1 = broadcast).
+	sUeventFd = socket(AF_NETLINK, SOCK_DGRAM | SOCK_NONBLOCK | SOCK_CLOEXEC, NETLINK_KOBJECT_UEVENT);
+	if(sUeventFd >= 0) {
+		// group 1 carries EVERY subsystem's uevents, so a single USB hotplug of
+		// a composite device (plus unrelated system activity) can burst dozens
+		// of messages. Grow the receive buffer so a burst doesn't overflow the
+		// socket (which would otherwise start returning ENOBUFS). Try the
+		// privileged force variant first, fall back to the normal one.
+		int rcvbuf = 1024 * 1024;
+		if(setsockopt(sUeventFd, SOL_SOCKET, SO_RCVBUFFORCE, &rcvbuf, sizeof(rcvbuf)) < 0)
+			setsockopt(sUeventFd, SOL_SOCKET, SO_RCVBUF, &rcvbuf, sizeof(rcvbuf));
+
+		struct sockaddr_nl addr;
+		memset(&addr, 0, sizeof(addr));
+		addr.nl_family = AF_NETLINK;
+		addr.nl_pid = 0;    // let the kernel assign
+		addr.nl_groups = 1; // kernel uevent broadcast group
+		if(bind(sUeventFd, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
+			printf("evdev: uevent bind failed (hotplug disabled)\n");
+			close(sUeventFd);
+			sUeventFd = -1;
+		}
 	} else {
-		printf("evdev: inotify_init failed (hotplug disabled)\n");
+		printf("evdev: uevent socket failed (hotplug disabled)\n");
 	}
 
 	// Start the pointer near screen centre so the frontend cursor is visible.
@@ -344,42 +407,98 @@ evdev_init(void)
 	if(sNumDevs == 0) printf("evdev: nothing in /dev/input (need read perm; 'input' group)\n");
 }
 
-// Drain inotify and add/remove devices. Small newly-created nodes sometimes
-// need a moment before EVIOCG* works; a failed try_add_device just means we
-// skip it (it will not appear again via inotify, but a controller that fires
-// CREATE is normally ready by the time we read it).
+// Handle one add/remove for a bare node name ("eventN").
+static void
+handle_hotplug_action(const char *action, const char *node)
+{
+	if(strncmp(node, "event", 5) != 0) return;
+
+	if(strcmp(action, "add") == 0) {
+		// A device can re-enumerate under the SAME node name (e.g. a controller
+		// that briefly drops its link). Drop any stale entry first so
+		// try_add_device re-opens the fresh fd instead of skipping a duplicate.
+		for(int i = 0; i < sNumDevs; i++)
+			if(strcmp(sDevs[i].node, node) == 0) {
+				remove_device_at(i);
+				break;
+			}
+		// The immediate open often races udev's ACL (EACCES); if it fails,
+		// queue the node for a few frames of retries.
+		if(!try_add_device(node)) pending_add(node);
+	} else if(strcmp(action, "remove") == 0) {
+		for(int i = 0; i < sNumDevs; i++)
+			if(strcmp(sDevs[i].node, node) == 0) {
+				remove_device_at(i);
+				break;
+			}
+		// Cancel any pending retry for a node that just went away.
+		for(int i = 0; i < sNumPending; i++)
+			if(strcmp(sPending[i].node, node) == 0) {
+				pending_remove_at(i);
+				break;
+			}
+	}
+}
+
+// Retry queued add@ nodes whose first open raced udev's ACL. Called each frame.
+static void
+process_pending(void)
+{
+	for(int i = sNumPending - 1; i >= 0; i--) {
+		if(try_add_device(sPending[i].node) || --sPending[i].tries <= 0) pending_remove_at(i);
+	}
+}
+
+// Drain the netlink uevent socket. Each message is a NUL-separated list of
+// KEY=VALUE lines whose first token is "action@devpath". We only care about
+// SUBSYSTEM=input events whose DEVNAME/devpath names an eventN node; by the
+// time the kernel broadcasts add@, the node is fully ready (see docs/10).
 static void
 process_hotplug(void)
 {
-	if(sInotifyFd < 0) return;
-	char buf[4096] __attribute__((aligned(__alignof__(struct inotify_event))));
+	if(sUeventFd < 0) return;
+	char buf[2048];
 	for(;;) {
-		ssize_t n = read(sInotifyFd, buf, sizeof(buf));
-		if(n <= 0) break;
-		for(char *p = buf; p < buf + n;) {
-			struct inotify_event *ev = (struct inotify_event *)p;
-			if(ev->len > 0 && strncmp(ev->name, "event", 5) == 0) {
-				if(ev->mask & IN_CREATE) {
-					// A device can re-enumerate under the SAME node name (e.g.
-					// a DualSense that briefly drops the USB link). Drop any
-					// stale entry for this node first so try_add_device re-opens
-					// the fresh fd instead of skipping it as a duplicate.
-					for(int i = 0; i < sNumDevs; i++)
-						if(strcmp(sDevs[i].node, ev->name) == 0) {
-							remove_device_at(i);
-							break;
-						}
-					try_add_device(ev->name);
-				} else if(ev->mask & IN_DELETE) {
-					for(int i = 0; i < sNumDevs; i++)
-						if(strcmp(sDevs[i].node, ev->name) == 0) {
-							remove_device_at(i);
-							break;
-						}
-				}
-			}
-			p += sizeof(struct inotify_event) + ev->len;
+		ssize_t n = recv(sUeventFd, buf, sizeof(buf) - 1, 0);
+		if(n < 0) {
+			// EAGAIN: no more messages this frame - done.
+			// ENOBUFS: the socket overflowed and the kernel dropped messages;
+			// the socket is still usable, so just stop for this frame and keep
+			// reading next frame (do NOT treat it as fatal). Any other error we
+			// also just bail on for this frame.
+			break;
 		}
+		if(n == 0) break;
+		buf[n] = '\0';
+
+		// First line: "action@devpath" (e.g. "add@/devices/.../input/input5/event5").
+		const char *action = buf;
+		const char *at = strchr(buf, '@');
+		if(at == 0) continue;
+		size_t alen = (size_t)(at - action);
+
+		// Parse the NUL-separated KEY=VALUE properties that follow.
+		bool isInput = false;
+		const char *devname = 0; // e.g. "input/event5"
+		size_t off = strlen(buf) + 1;
+		for(; off < (size_t)n; off += strlen(buf + off) + 1) {
+			const char *line = buf + off;
+			if(strncmp(line, "SUBSYSTEM=", 10) == 0)
+				isInput = strcmp(line + 10, "input") == 0;
+			else if(strncmp(line, "DEVNAME=", 8) == 0)
+				devname = line + 8;
+		}
+		if(!isInput || devname == 0) continue;
+
+		// DEVNAME is like "input/event5"; take the basename.
+		const char *node = strrchr(devname, '/');
+		node = node ? node + 1 : devname;
+
+		char act[16];
+		if(alen >= sizeof(act)) alen = sizeof(act) - 1;
+		memcpy(act, action, alen);
+		act[alen] = '\0';
+		handle_hotplug_action(act, node);
 	}
 }
 
@@ -473,31 +592,37 @@ poll_gamepad(int idx)
 	}
 }
 
-// Belt-and-suspenders hotplug: inotify gives fast add/remove, but a device can
-// silently re-enumerate (USB re-bind) without a clean node delete/create pair,
-// leaving us with a dead fd and no event. Every ~1s we (a) drop any tracked fd
-// whose device has vanished (EVIOCGID -> ENODEV) and (b) rescan /dev/input for
-// nodes we're not tracking. Both are cheap and self-correcting.
+// Cheap periodic health check: drop any tracked fd whose device has vanished
+// (EVIOCGID -> error). This only touches the handful of fds we already hold
+// open, costing microseconds.
+//
+// We deliberately do NOT rescan /dev/input here. Opening the non-input nodes
+// present on a Pi (event0 vc4-hdmi, event1 HDMI Jack) and issuing EVIOCGBIT on
+// them is astonishingly slow - measured ~60ms and ~196ms respectively - so a
+// full rescan every second stalled the render loop for 130-256ms (the "stutter
+// once a second"). inotify (process_hotplug) already delivers add/remove events
+// for real hotplug, including a device that re-enumerates under the same node
+// name (it fires DELETE then CREATE), so periodic rescanning buys us nothing.
 static void
-health_check_and_rescan(void)
+health_check(void)
 {
 	for(int i = sNumDevs - 1; i >= 0; i--) {
 		struct input_id id;
 		if(ioctl(sDevs[i].fd, EVIOCGID, &id) < 0) remove_device_at(i);
 	}
-	scan_all_devices();
 }
 
 static void
 evdev_poll(void)
 {
 	process_hotplug();
+	process_pending();
 
-	// Throttled safety-net rescan (~1s at 30-60fps).
-	static int sRescanTick = 0;
-	if(++sRescanTick >= 45) {
-		sRescanTick = 0;
-		health_check_and_rescan();
+	// Throttled health check on tracked fds only (~1s at 30-60fps).
+	static int sHealthTick = 0;
+	if(++sHealthTick >= 45) {
+		sHealthTick = 0;
+		health_check();
 	}
 
 	int wheel = 0;
@@ -627,11 +752,9 @@ evdev_terminate(void)
 {
 	for(int i = 0; i < sNumDevs; i++) close(sDevs[i].fd);
 	sNumDevs = 0;
-	if(sInotifyFd >= 0) {
-		if(sInotifyWatch >= 0) inotify_rm_watch(sInotifyFd, sInotifyWatch);
-		close(sInotifyFd);
-		sInotifyFd = -1;
-		sInotifyWatch = -1;
+	if(sUeventFd >= 0) {
+		close(sUeventFd);
+		sUeventFd = -1;
 	}
 }
 

@@ -107,14 +107,17 @@ gpio_capturePad(int padID)
 
 	bool inMenu = !!FrontEndMenuManager.m_bMenuActive;
 
+	// All writes below are OR-only (only set fields for buttons that are
+	// actually held). PCTempJoyState is cleared once by the registry before
+	// any source runs, so writing zeros here would clobber a co-active evdev
+	// controller instead of leaving its contribution intact.
+
 	// --- D-pad: always controls movement (LeftStick) and menu nav (DPad). ---
 	bool du = p(GK_UP), dd = p(GK_DOWN), dl = p(GK_LEFT), dr = p(GK_RIGHT);
-	s.DPadUp = du ? 255 : 0;
-	s.DPadDown = dd ? 255 : 0;
-	s.DPadLeft = dl ? 255 : 0;
-	s.DPadRight = dr ? 255 : 0;
-	// Only write sticks when a direction is actually held, so we don't zero
-	// out a co-active evdev controller's stick (OR semantics, see registry).
+	if(du) s.DPadUp = 255;
+	if(dd) s.DPadDown = 255;
+	if(dl) s.DPadLeft = 255;
+	if(dr) s.DPadRight = 255;
 	if(dl || dr) s.LeftStickX = (int16)((dr ? 128 : 0) - (dl ? 128 : 0));
 	if(du || dd) s.LeftStickY = (int16)((dd ? 128 : 0) - (du ? 128 : 0));
 
@@ -136,11 +139,11 @@ gpio_capturePad(int padID)
 
 	// --- Shoulders ---
 	// L = fire/shoot (Circle), R = aim/target (LeftShoulder1)
-	s.Circle = p(GK_L) ? 255 : 0;
-	s.LeftShoulder1 = p(GK_R) ? 255 : 0;
+	if(p(GK_L)) s.Circle = 255;
+	if(p(GK_R)) s.LeftShoulder1 = 255;
 
 	// --- SELECT = Triangle (enter/exit vehicle, interact) ---
-	s.Triangle = p(GK_SELECT) ? 255 : 0;
+	if(p(GK_SELECT)) s.Triangle = 255;
 
 	// --- START = Cross (confirm/jump); long-press -> ESC (back/pause) ---
 	bool startNow = p(GK_START);
