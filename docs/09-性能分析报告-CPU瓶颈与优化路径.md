@@ -175,12 +175,29 @@ GTA3 的游戏逻辑是严格串行的单线程设计（源自 PS2 时代），�
 | alsoft.ini 音频优化 | ALSoftP1 CPU 降低 | ✅ 已提交 |
 | SPI 双缓冲后台推送 | present 时间从 ~19ms 隐藏 | ✅ 已实施 |
 | SPI 安全频率 66.7MHz | 屏幕稳定无花屏 | ✅ 已确认 |
-| **待实施：CPU 超频到 1.2GHz** | **预计 +5-6fps** | ⬜ 低风险 |
-| 待实施：`NO_ALPHATEST` opaque pass | 未量化，需实测 | ⬜ 中等 |
+| **待实施：CPU 超频到 1.2GHz** | **+3fps（31→34fps）** | ✅ 已实施（arm_freq=1200 over_voltage=6） |
+| NO_ALPHATEST | librw 已自动切换，无需修改 | ✅ 已确认（2026-08-08） |
+| dma_buf 零拷贝读回 | VC4 T-Tiling 格式不支持 | ❌ 不可行（已确认）|
 
 ---
 
-## 10. 工具和数据位置
+## 10. NO_ALPHATEST 调查结论（2026-08-08）
+
+**结论：NO_ALPHATEST 优化已经在工作，无需额外改动。**
+
+librw 的所有渲染路径（default / skin / matfx）均已有完整的 `_noAT` shader 变体，根据纹理的 `hasAlpha` 标志（由 `setRasterStage` 在绑定纹理时自动设置）在运行时动态切换。不透明建筑/路面自动用无 `discard` 的 shader，带 alpha channel 的植被/围栏才用带 `discard` 的 shader。
+
+**depth cull = 0% 的真正原因**：VC4/V3D 的 tile-based 架构下，TLB 统计的是 per-tile coarse depth culling，而 GLES2 下不支持 early fragment tests（GLES 3.1+ 功能），Mesa VC4/V3D 驱动也未启用软件 hierarchical-Z。这是硬件架构特性，不是 shader 代码问题。
+
+## 11. dma_buf 零拷贝读回调查结论（2026-08-08）
+
+**结论：VC4 T-Tiling 格式不支持零拷贝，维持 glReadPixels。**
+
+EGLImage + dma_buf export 技术上完整可用（`EGL_MESA_image_dma_buf_export` 已确认存在），但 VC4 render target 使用 **Broadcom T-Tiling**（`modifier=0x700000000000001 = DRM_FORMAT_MOD_BROADCOM_VC4_T_TILED`），导出的 dma_buf 内存是 tile 布局，不是 linear pixel 排列，直接 mmap 读出是花屏。CPU 端解 tile（4×4 pixel tile 重排）的代价比 `glReadPixels`（驱动内部硬件辅助 deswizzle）更高。
+
+Mesa VC4 的 `glReadPixels(GL_RGB, GL_UNSIGNED_SHORT_5_6_5)` 已是该路径的最优实现（0.67ms/帧）。
+
+## 12. 工具和数据位置
 
 | 工具/文件 | 位置 |
 |---|---|

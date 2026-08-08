@@ -1,0 +1,118 @@
+name: re3 RPi GBM build + PC build
+
+# Builds two configurations on every push/PR:
+#   1. rpi-gbm  – armhf cross-compile for Raspberry Pi Zero 2 W (GBM + SPI)
+#   2. linux-glfw – native x86-64 Linux GL3/GLFW (smoke test)
+
+on:
+  pull_request:
+  push:
+    branches: ['**']
+
+jobs:
+  # ── Job 1: RPi armhf cross-compile (GBM + SPI skeleton) ──────────────────
+  rpi-gbm:
+    name: RPi GBM+SPI (armhf cross)
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      # Install the armhf cross toolchain and add the armhf architecture so
+      # we can install RPI-matching library headers via dpkg.
+      - name: Install cross toolchain
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends \
+            gcc-arm-linux-gnueabihf g++-arm-linux-gnueabihf \
+            cmake ninja-build pkg-config
+          # Add armhf arch for library headers
+          sudo dpkg --add-architecture armhf
+          sudo apt-get update -qq
+          # GLES2 / EGL / GBM / libopenal / libasound headers for armhf
+          sudo apt-get install -y --no-install-recommends \
+            libgles2-mesa-dev:armhf \
+            libegl-dev:armhf \
+            libgbm-dev:armhf \
+            libopenal-dev:armhf \
+            libasound2-dev:armhf \
+            libmpg123-dev:armhf \
+            libsndfile1-dev:armhf \
+            libgbm-dev:armhf || true  # non-fatal: some may not exist on this runner
+
+      # Build the sysroot path expected by rpi-armhf-toolchain.cmake.
+      # On CI we point it at the system's armhf multiarch tree.
+      - name: Configure RPi GBM build
+        run: |
+          # Override sysroot to the cross-compile multiarch tree already present.
+          # The toolchain file uses RPI_SYSROOT; pass it to use the installed armhf headers.
+          cmake -G Ninja -B build-ci-gbm \
+            -DCMAKE_TOOLCHAIN_FILE=rpi-armhf-toolchain.cmake \
+            -DRPI_SYSROOT=/usr \
+            -DLIBRW_GL3_GFXLIB=GBM \
+            -DRE3_OUTPUT_SPI=ON \
+            -DRE3_RPI=ON \
+            -DRE3_RPI_LEAN_FX=ON \
+            -DRE3_TIMEBARS_LOG=ON \
+            -DRE3_AUDIO=OAL \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_EXE_LINKER_FLAGS="-L/usr/lib/arm-linux-gnueabihf -Wl,-rpath-link,/usr/lib/arm-linux-gnueabihf"
+
+      - name: Build (RPi GBM+SPI)
+        run: cmake --build build-ci-gbm -j$(nproc)
+
+      - name: Verify binary
+        run: |
+          file build-ci-gbm/src/re3
+          arm-linux-gnueabihf-size build-ci-gbm/src/re3
+
+      - name: Upload RPi binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: re3-rpi-gbm-armhf
+          path: build-ci-gbm/src/re3
+          if-no-files-found: error
+
+  # ── Job 2: Native Linux x86-64, GL3+GLFW (smoke test, no conan) ──────────
+  linux-glfw:
+    name: Linux GLFW GL3 (x86-64)
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends \
+            cmake ninja-build \
+            libglfw3-dev \
+            libopenal-dev \
+            libgles2-mesa-dev \
+            libegl-dev \
+            libmpg123-dev \
+            libsndfile1-dev
+
+      - name: Configure (Linux GLFW)
+        run: |
+          cmake -G Ninja -B build-ci-glfw \
+            -DLIBRW_GL3_GFXLIB=GLFW \
+            -DRE3_AUDIO=OAL \
+            -DCMAKE_BUILD_TYPE=RelWithDebInfo
+
+      - name: Build (Linux GLFW)
+        run: cmake --build build-ci-glfw -j$(nproc)
+
+      - name: Verify binary
+        run: file build-ci-glfw/src/re3
+
+      - name: Upload Linux binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: re3-linux-glfw-x86-64
+          path: build-ci-glfw/src/re3
+          if-no-files-found: error

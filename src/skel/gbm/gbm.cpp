@@ -153,7 +153,7 @@ void _psCreateFolder(const char *path)
 #else
 	struct stat info;
 	char fullpath[PATH_MAX];
-	realpath(path, fullpath);
+	if (!realpath(path, fullpath)) fullpath[0] = '\0'; /* error: use empty path, lstat will fail gracefully */
 
 	if (lstat(fullpath, &info) != 0) {
 		if (errno == ENOENT || (errno != EACCES && !S_ISDIR(info.st_mode))) {
@@ -213,6 +213,7 @@ const char *_psGetUserFilesFolder()
 RwBool
 psCameraBeginUpdate(RwCamera *camera)
 {
+	(void)camera; /* GBM always renders to Scene.camera; parameter kept for API compat */
 	if ( !RwCameraBeginUpdate(Scene.camera) )
 	{
 		ForegroundApp = FALSE;
@@ -314,7 +315,7 @@ _psPresent(void)
 		aR+=gReadMs; aP+=gPresentMs; aG+=gGpuMs; aC+=gCpuMs; aW+=gFrameMs; aDC+=gDrawCalls;
 		if (++n >= 120) {
 			printf("[perf] %dx%d cpu=%.2f gpu=%.2f read=%.2f present=%.2f dc=%d | frame=%.2fms %.0ffps\n",
-				w, h, aC/n, aG/n, aR/n, aP/n, aDC/n, aW/n, aW>0?1000.0f/(aW/n):0.0f);
+				w, h, aC/n, aG/n, aR/n, aP/n, aDC/n, aW/n, aW>0 ? 1000.0/(aW/n) : 0.0);
 			aR=aP=aG=aC=aW=0; aDC=0; n=0;
 		}
 	}
@@ -527,7 +528,7 @@ static void _psHandleVibration()
 }
 #else
 static void _psInitializeVibration() {}
-static void _psHandleVibration() {}
+static __attribute__((unused)) void _psHandleVibration() {}
 #endif
 
 /*
@@ -871,9 +872,11 @@ psSelectDevice()
 	RwVideoMode			vm;
 	RwInt32				subSysNum;
 	RwInt32				AutoRenderer = 0;
+	(void)AutoRenderer; /* used in non-IMPROVED_VIDEOMODE path only */
 	
 
 	RwBool modeFound = FALSE;
+	(void)modeFound; /* used in non-IMPROVED_VIDEOMODE path only */
 	
 	if ( !useDefault )
 	{
@@ -1119,7 +1122,7 @@ RwBool _psSetVideoMode(RwInt32 subSystem, RwInt32 videoMode)
 /*
  *****************************************************************************
  */
-static RwChar **
+static __attribute__((unused)) RwChar **
 CommandLineToArgv(RwChar *cmdLine, RwInt32 *argCount)
 {
 	RwInt32 numArgs = 0;
@@ -1375,11 +1378,13 @@ void HandleExit()
 
 #ifndef _WIN32
 void terminateHandler(int sig, siginfo_t *info, void *ucontext) {
+	(void)sig; (void)info; (void)ucontext;
 	RsGlobal.quit = TRUE;
 }
 
 #ifdef FLUSHABLE_STREAMING
 void dummyHandler(int sig){
+	(void)sig;
 	// Don't kill the app pls
 }
 #endif
