@@ -28,6 +28,11 @@ struct HudMetrics {
 int
 Hud_Enabled(void);
 
+// Flip the enabled state at runtime (e.g. bound to the pause action so the
+// player can hide the overlay). Persists until toggled again or process exit.
+void
+Hud_Toggle(void);
+
 // Feed the latest per-frame metrics (call once per frame).
 void
 Hud_Update(const HudMetrics *m);

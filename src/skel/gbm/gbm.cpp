@@ -283,6 +283,16 @@ _psPresent(void)
 	double t1 = psTimer();
 	gReadMs = t1 - t0;
 
+	// Toggle the metrics overlay on each pause (menu inactive -> active edge),
+	// so the player can hide/show it with the pause button. Checked every frame
+	// regardless of current HUD state.
+	{
+		static bool sPrevMenuActive = false;
+		bool menuActive = !!FrontEndMenuManager.m_bMenuActive;
+		if(menuActive && !sPrevMenuActive) Hud_Toggle();
+		sPrevMenuActive = menuActive;
+	}
+
 	// Overlay perf metrics onto the frame (RE3_HUD=1) before it goes to the sink.
 	if(Hud_Enabled()) {
 		HudMetrics m = {}; // zero-init: caller only fills timing fields

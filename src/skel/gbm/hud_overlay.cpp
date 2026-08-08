@@ -51,6 +51,15 @@ Hud_Enabled(void)
 	return sEnabled;
 }
 
+void
+Hud_Toggle(void)
+{
+	// Resolve the initial state first so the first toggle flips from the
+	// RE3_HUD default rather than from the uninitialised -1.
+	if(sEnabled < 0) sEnabled = getenv("RE3_HUD") ? 1 : 0;
+	sEnabled = !sEnabled;
+}
+
 // ---- metrics --------------------------------------------------------------
 static HudMetrics sM;
 static char sLines[8][48];
