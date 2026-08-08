@@ -25,11 +25,22 @@ jobs:
 
       - name: Check format (our new files)
         run: |
-          # Check files introduced or heavily modified in this branch.
-          # Exclude vendor/ and auto-generated shader .inc files.
-          FILES=$(git diff --name-only --diff-filter=ACM origin/HEAD...HEAD 2>/dev/null || \
-                  git diff --name-only --diff-filter=ACM HEAD~1...HEAD) || true
-          CPP_FILES=$(echo "$FILES" | grep -E '\.(cpp|c|h)$' | grep -v vendor/ | grep -v _gl\.inc)
+          # Determine the base branch for diff. On a fork the upstream default
+          # branch may not be fetched, so fall back to comparing with HEAD~1.
+          BASE=""
+          if git fetch origin main 2>/dev/null; then
+            BASE="origin/main"
+          elif git fetch origin master 2>/dev/null; then
+            BASE="origin/master"
+          fi
+
+          if [ -n "$BASE" ]; then
+            FILES=$(git diff --name-only --diff-filter=ACM "$BASE"...HEAD)
+          else
+            FILES=$(git diff --name-only --diff-filter=ACM HEAD~1...HEAD)
+          fi
+
+          CPP_FILES=$(echo "$FILES" | grep -E '\.(cpp|c|h)$' | grep -v vendor/ | grep -v '_gl\.inc' || true)
           if [ -z "$CPP_FILES" ]; then
             echo "No C/C++ files to check."
             exit 0
