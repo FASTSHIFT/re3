@@ -286,6 +286,12 @@ void CWeather::ReleaseWeather()
 
 void CWeather::AddRain()
 {
+#ifdef RPI_LEAN_FX
+	// Screen-space rain droplets/streaks (PARTICLE_RAINDROP_2D) are a cosmetic
+	// fill-rate cost we skip on the Pi; the world-space rain particles are
+	// unaffected. See docs/05 and the postfx.cpp RPI_LEAN_FX guard.
+	return;
+#else
 	if (CCullZones::CamNoRain() || CCullZones::PlayerNoRain())
 		return;
 	if (TheCamera.GetLookingLRBFirstPerson()) {
@@ -395,6 +401,7 @@ void CWeather::AddRain()
 					CVector(0.0f, 0.0f, 0.0f), nil, 0.0f, colour);
 		}
 	}
+#endif // RPI_LEAN_FX
 }
 
 void RenderOneRainStreak(CVector pos, CVector unused, int intensity, bool scale, float distance)

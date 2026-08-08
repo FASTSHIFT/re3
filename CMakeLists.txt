@@ -64,11 +64,15 @@ if(${PROJECT}_TIMEBARS_LOG)
     message(STATUS "${PROJECT}_TIMEBARS_LOG enabled: per-stage timers to log")
 endif()
 
-# Drop bandwidth-heavy post-processing (screen rain droplets) for low-end GPUs.
-option(${PROJECT}_RPI_LEAN_FX "Disable fullscreen-copy post effects (screen droplets)" OFF)
+# Drop bandwidth-heavy post-processing (screen rain streaks/droplets + the
+# fullscreen-copy colour-filter/motion-blur pass) for low-end GPUs. These are
+# cosmetic and cost a lot of fill-rate/bandwidth on VC4. Defaults to ON on the
+# Pi (RE3_RPI) so a plain Pi build never silently re-enables them; still
+# overridable with -DRE3_RPI_LEAN_FX=OFF for A/B testing.
+option(${PROJECT}_RPI_LEAN_FX "Disable fullscreen-copy post effects (screen rain droplets)" ${${PROJECT}_RPI})
 if(${PROJECT}_RPI_LEAN_FX)
     add_compile_definitions(RPI_LEAN_FX)
-    message(STATUS "${PROJECT}_RPI_LEAN_FX enabled: lean post-processing")
+    message(STATUS "${PROJECT}_RPI_LEAN_FX enabled: lean post-processing (no screen droplets)")
 endif()
 
 # Output backend for the GBM (headless) skeleton: push frames to an ST7789 SPI
@@ -80,13 +84,15 @@ if(${PROJECT}_OUTPUT_SPI)
     message(STATUS "${PROJECT}_OUTPUT_SPI enabled: ST7789 SPI output (drivers/st7789)")
 endif()
 
-# Input source for the GBM (headless) skeleton: read a keyboard via evdev
-# (/dev/input/event*) and feed re3's keyboard event chain. Lets the headless
-# build take input without GLFW/X11. See docs/08.
-option(${PROJECT}_INPUT_EVDEV "GBM skeleton reads keyboard input via evdev (/dev/input)" OFF)
+# Input source for the GBM (headless) skeleton: read keyboard, mouse and
+# gamepads via evdev (/dev/input/event*) with hotplug, feeding re3's keyboard
+# event chain and pad state. Lets the headless build take input without
+# GLFW/X11. Defaults ON for the Pi so a plain Pi build has working input.
+# See docs/08.
+option(${PROJECT}_INPUT_EVDEV "GBM skeleton reads keyboard/mouse/gamepad via evdev (/dev/input)" ${${PROJECT}_RPI})
 if(${PROJECT}_INPUT_EVDEV)
     add_compile_definitions(RE3_INPUT_EVDEV)
-    message(STATUS "${PROJECT}_INPUT_EVDEV enabled: evdev keyboard input")
+    message(STATUS "${PROJECT}_INPUT_EVDEV enabled: evdev keyboard/mouse/gamepad input")
 endif()
 
 # Desktop/emulator debug backends for the GBM skeleton: present the readback in
