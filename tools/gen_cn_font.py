@@ -91,18 +91,22 @@ def build_charmap(glyphs):
 
 
 def encode_value(v, charmap):
-    """Encode one string to a list of GXT wchars following the JP scheme."""
+    """Encode one string to a list of GXT wchars following the JP scheme.
+
+    Control tokens: in the stock JAPANESE.gxt EVERY character of a ~...~ token
+    (the tildes, the tag letter, and the inner ACTION name) carries the 0x8000
+    bit, e.g. ~k~~PED_FIREWEAPON~ -> 0x807E 0x806B 0x807E 0x807E 0x8050 ... .
+    The engine's token parser (Messages.cpp, Font.cpp) matches on that flag, so
+    we must OR 0x8000 onto the whole token, not just the tildes."""
     out = []
     i = 0
     while i < len(v):
         ch = v[i]
         if ch == '~':
-            # Emit '~' as JAP_TERMINATION; inner letters stay ASCII; closing '~'
-            # also JAP_TERMINATION. Copy through to the matching '~'.
-            out.append(JAP_TERM)
+            out.append(JAP_TERM)  # 0x8000 | '~'
             i += 1
             while i < len(v) and v[i] != '~':
-                out.append(ord(v[i]))
+                out.append(0x8000 | (ord(v[i]) & 0xFF))  # flag inner token chars
                 i += 1
             if i < len(v):  # closing '~'
                 out.append(JAP_TERM)
