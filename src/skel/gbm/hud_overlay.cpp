@@ -44,11 +44,20 @@ static const Glyph kFont[] = {
 	{'S', {0x46,0x49,0x49,0x49,0x31}},
 	{'T', {0x01,0x01,0x7F,0x01,0x01}},
 	{'M', {0x7F,0x02,0x0C,0x02,0x7F}},
-	{'P', {0x7F,0x09,0x09,0x09,0x06}},
 	{'Y', {0x07,0x08,0x70,0x08,0x07}},
 	{'D', {0x7F,0x41,0x41,0x22,0x1C}},
 	{'W', {0x3F,0x40,0x38,0x40,0x3F}},
 	{'R', {0x7F,0x09,0x19,0x29,0x46}},
+	{'A', {0x7C,0x12,0x11,0x12,0x7C}},
+	{'H', {0x7F,0x08,0x08,0x08,0x7F}},
+	{'Z', {0x61,0x51,0x49,0x45,0x43}},
+	{'V', {0x3F,0x40,0x40,0x40,0x3F}},
+	{'E', {0x7F,0x49,0x49,0x49,0x41}},
+	{'I', {0x00,0x41,0x7F,0x41,0x00}},
+	{'L', {0x7F,0x40,0x40,0x40,0x40}},
+	{'N', {0x7F,0x02,0x04,0x08,0x7F}},
+	{'O', {0x3E,0x41,0x41,0x41,0x3E}},
+	{'X', {0x63,0x14,0x08,0x14,0x63}},
 };
 
 static const uint8_t *glyph(char c)
@@ -69,7 +78,7 @@ int Hud_Enabled(void)
 
 // ---- metrics --------------------------------------------------------------
 static HudMetrics sM;
-static char sLines[6][40];
+static char sLines[8][48];
 static int sNumLines = 0;
 
 static int read_cpu_temp_milli(void)
@@ -84,25 +93,115 @@ static int read_cpu_temp_milli(void)
 	return t;
 }
 
+// Read a clock frequency from /sys/devices/system/cpu or vcgencmd sysfs.
+// Returns MHz, or 0 on failure. Cached by the caller.
+static int read_arm_mhz(void)
+{
+	FILE *f = fopen("/sys/devices/system/cpu/cpu0/cpufreq/scaling_cur_freq", "r");
+	if (!f) return 0;
+	int khz = 0;
+	if (fscanf(f, "%d", &khz) != 1) khz = 0;
+	fclose(f);
+	int mhz = khz / 1000;
+	// Sanity: ARM on Pi is 600-2000 MHz range.
+	if (mhz < 100 || mhz > 3000) {
+		fprintf(stderr, "[hud] arm_mhz: bad value khz=%d -> mhz=%d, clamping\n", khz, mhz);
+		return 0;
+	}
+	return mhz;
+}
+
+// CPU usage: read /proc/stat, compute delta between calls.
+// Returns 0-100 (whole-system %, all cores combined / num_cores = per-core avg).
+static int read_cpu_percent(void)
+{
+	typedef unsigned long long ull;
+	static ull prev_idle = 0, prev_total = 0;
+
+	FILE *f = fopen("/proc/stat", "r");
+	if (!f) return -1;
+	ull user, nice, sys, idle, iowait, irq, softirq, steal;
+	int ok = (fscanf(f, "cpu %llu %llu %llu %llu %llu %llu %llu %llu",
+	                 &user, &nice, &sys, &idle, &iowait, &irq, &softirq, &steal) == 8);
+	fclose(f);
+	if (!ok) return -1;
+
+	ull cur_idle  = idle + iowait;
+	ull cur_total = user + nice + sys + idle + iowait + irq + softirq + steal;
+	ull d_idle    = cur_idle  - prev_idle;
+	ull d_total   = cur_total - prev_total;
+	prev_idle  = cur_idle;
+	prev_total = cur_total;
+
+	if (d_total == 0) return 0;
+	return (int)(100 * (d_total - d_idle) / d_total);
+}
+
+static int read_v3d_mhz(void)
+{
+	// Prefer debugfs clk_rate (reliable, no subprocess).
+	static const char *paths[] = {
+		"/sys/kernel/debug/clk/fw-clk-v3d/clk_rate",
+		"/sys/kernel/debug/clk/v3d/clk_rate",
+		NULL
+	};
+	for (int i = 0; paths[i]; i++) {
+		FILE *f = fopen(paths[i], "r");
+		if (!f) continue;
+		long hz = 0;
+		int ok = (fscanf(f, "%ld", &hz) == 1);
+		fclose(f);
+		if (ok && hz > 1000000L && hz < 2000000000L) // sanity: 1MHz..2GHz
+			return (int)(hz / 1000000);
+	}
+	// Fallback: vcgencmd (spawns a process; slower but works without debugfs).
+	FILE *f = popen("vcgencmd measure_clock v3d 2>/dev/null", "r");
+	if (!f) return 0;
+	long hz = 0;
+	int ok = (fscanf(f, "frequency(%*d)=%ld", &hz) == 1);
+	pclose(f);
+	// Sanity-check the result — a corrupt read produces garbage values.
+	if (!ok || hz < 1000000L || hz > 2000000000L) return 0;
+	return (int)(hz / 1000000);
+}
+
 void Hud_Update(const HudMetrics *m)
 {
 	if (!Hud_Enabled()) return;
 	sM = *m;
 
-	// Refresh temperature every ~30 frames (sysfs read is not free).
-	static int tempMilli = -1, cnt = 0;
-	if ((cnt++ % 30) == 0)
+	// Refresh temperature and clocks every ~60 frames (sysfs reads are not free).
+	static int tempMilli = -1, armMhz = 0, v3dMhz = 0, cnt = 0;
+	if ((cnt++ % 60) == 0) {
 		tempMilli = read_cpu_temp_milli();
+		// armMhz/v3dMhz from caller are always 0 (gbm.cpp zero-inits HudMetrics).
+		// Read from sysfs directly.
+		int newArm = read_arm_mhz();
+		int newV3d = read_v3d_mhz();
+		if (newArm != armMhz || newV3d != v3dMhz) {
+			fprintf(stderr, "[hud] freq update: arm=%d->%d  v3d=%d->%d\n",
+			        armMhz, newArm, v3dMhz, newV3d);
+		}
+		armMhz = newArm;
+		v3dMhz = newV3d;
+	}
+	// CPU usage is sampled every frame (delta is meaningful at frame rate).
+	int cpuPct = read_cpu_percent();
 
 	double fps = sM.frameMs > 0.0 ? 1000.0 / sM.frameMs : 0.0;
 
 	sNumLines = 0;
-	snprintf(sLines[sNumLines++], sizeof(sLines[0]), "FPS: %.0f (%.0fMS)", fps, sM.frameMs);
-	snprintf(sLines[sNumLines++], sizeof(sLines[0]), "CPU: %.1f", sM.cpuMs);
-	snprintf(sLines[sNumLines++], sizeof(sLines[0]), "GPU: %.1f", sM.gpuMs);
-	snprintf(sLines[sNumLines++], sizeof(sLines[0]), "CPY: %.1f", sM.readMs + sM.presentMs);
+	snprintf(sLines[sNumLines++], sizeof(sLines[0]), "FPS:%.0f %.1fms", fps, sM.frameMs);
+	snprintf(sLines[sNumLines++], sizeof(sLines[0]), "CPU:%.1f GPU:%.1f", sM.cpuMs, sM.gpuMs);
+	snprintf(sLines[sNumLines++], sizeof(sLines[0]), "CPY:%.1f", sM.readMs + sM.presentMs);
+	if (cpuPct >= 0)
+		snprintf(sLines[sNumLines++], sizeof(sLines[0]), "SYS:%d%% (4C)", cpuPct);
+	if (armMhz > 0 && v3dMhz > 0)
+		snprintf(sLines[sNumLines++], sizeof(sLines[0]), "A:%dM V:%dM", armMhz, v3dMhz);
+	else if (armMhz > 0)
+		snprintf(sLines[sNumLines++], sizeof(sLines[0]), "A:%dM", armMhz);
 	if (tempMilli >= 0)
-		snprintf(sLines[sNumLines++], sizeof(sLines[0]), "TMP: %.1fC", tempMilli / 1000.0);
+		snprintf(sLines[sNumLines++], sizeof(sLines[0]), "T:%.1fC", tempMilli / 1000.0);
 }
 
 // ---- drawing --------------------------------------------------------------

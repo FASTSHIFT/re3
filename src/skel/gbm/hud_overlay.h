@@ -17,6 +17,10 @@ struct HudMetrics {
 	double gpuMs;		// showRaster/glFinish (GPU scene wait)
 	double readMs;		// glReadPixels readback
 	double presentMs;	// sink present (blit/scale/flush)
+
+	// Clock frequencies (MHz). Filled by the skeleton from sysfs; 0 = unknown.
+	int armMhz;		// ARM CPU core (e.g. 1000)
+	int v3dMhz;		// V3D GPU shader core (e.g. 300)
 };
 
 // Is the HUD enabled? (checks RE3_HUD once). Cheap to call per frame.

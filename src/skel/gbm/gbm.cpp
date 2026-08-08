@@ -288,7 +288,7 @@ _psPresent(void)
 
 	// Overlay perf metrics onto the frame (RE3_HUD=1) before it goes to the sink.
 	if (Hud_Enabled()) {
-		HudMetrics m;
+		HudMetrics m = {};	// zero-init: caller only fills timing fields
 		m.frameMs = gFrameMs; m.cpuMs = gCpuMs; m.gpuMs = gGpuMs;
 		m.readMs = gReadMs; m.presentMs = gPresentMs;	// presentMs = last frame's
 		Hud_Update(&m);
