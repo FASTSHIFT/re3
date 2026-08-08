@@ -261,7 +261,7 @@ CDarkel::RegisterKillByPlayer(CPed *victim, eWeaponType weapon, bool headshot)
 	}
 	CStats::PeopleKilledByPlayer++;
 	RegisteredKills[victim->GetModelIndex()]++;
-	CStats::PedsKilledOfThisType[victim->bChrisCriminal ? PEDTYPE_CRIMINAL : victim->m_nPedType]++;
+	CStats::PedsKilledOfThisType[victim->bChrisCriminal ? (int)PEDTYPE_CRIMINAL : (int)victim->m_nPedType]++;
 	if (headshot)
 		CStats::HeadsPopped++;
 	CStats::KillsSinceLastCheckpoint++;

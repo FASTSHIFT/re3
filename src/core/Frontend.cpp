@@ -513,7 +513,7 @@ CMenuManager::GetPreviousPageOption()
 	if (prevPage == -1) // Game also does same
 		return 0;
 
-	prevPage = prevPage == MENUPAGE_NONE ? (!m_bGameNotLoaded ? MENUPAGE_PAUSE_MENU : MENUPAGE_START_MENU) : prevPage;
+	prevPage = prevPage == MENUPAGE_NONE ? (int8)(!m_bGameNotLoaded ? MENUPAGE_PAUSE_MENU : MENUPAGE_START_MENU) : prevPage;
 
 	for (int i = 0; i < NUM_MENUROWS; i++) {
 		if (aScreens[prevPage].m_aEntries[i].m_Action >= MENUACTION_NOTHING) { // CFO check

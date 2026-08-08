@@ -2442,7 +2442,7 @@ cAudioManager::ProcessVehicleOneShots(cVehicleParams& params)
 		case SOUND_CAR_JUMP:
 		{
 			static uint8 iWheelIndex = 82;
-			Vol = Max(VEHICLE_ONE_SHOT_CAR_JUMP_VOLUME, 2 * (100 * m_asAudioEntities[m_sQueueSample.m_nEntityIndex].m_afVolume[i]));
+			Vol = Max((int)VEHICLE_ONE_SHOT_CAR_JUMP_VOLUME, 2 * (100 * m_asAudioEntities[m_sQueueSample.m_nEntityIndex].m_afVolume[i]));
 			maxDist = SQR(VEHICLE_ONE_SHOT_CAR_JUMP_MAX_DIST);
 			m_sQueueSample.m_nSampleIndex = SFX_TYRE_BUMP;
 			m_sQueueSample.m_nBankIndex = SFX_BANK_0;

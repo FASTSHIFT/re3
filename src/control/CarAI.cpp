@@ -387,7 +387,7 @@ void CCarAI::UpdateCarAI(CVehicle* pVehicle)
 							pVehicle->AutoPilot.m_nTimeTempAction = CTimer::GetTimeInMilliseconds() + 750;
 						pVehicle->AutoPilot.m_nAntiReverseTimer = CTimer::GetTimeInMilliseconds();
 						if (pVehicle->VehicleCreatedBy == RANDOM_VEHICLE)
-							pVehicle->AutoPilot.m_nDrivingStyle = Max(DRIVINGSTYLE_AVOID_CARS, pVehicle->AutoPilot.m_nDrivingStyle);
+							pVehicle->AutoPilot.m_nDrivingStyle = Max((int)DRIVINGSTYLE_AVOID_CARS, (int)pVehicle->AutoPilot.m_nDrivingStyle);
 						pVehicle->PlayCarHorn();
 					}
 				}

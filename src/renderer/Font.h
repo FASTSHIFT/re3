@@ -60,7 +60,7 @@ enum
 	LANGSET_MAX
 };
 
-#define FONT_LOCALE(style) (CFont::IsJapanese() ? FONT_JAPANESE : style)
+#define FONT_LOCALE(style) (CFont::IsJapanese() ? (int)FONT_JAPANESE : (int)(style))
 #else
 #define FONT_LOCALE(style) (style)
 #endif
