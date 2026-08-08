@@ -26,11 +26,15 @@ extern "C" {
 #define PI_GPIO_PULL_UP 2
 
 /* Initialize: mmap /dev/gpiomem. Returns 0 on success, <0 on failure. Idempotent. */
-int pi_gpio_init(void);
+int
+pi_gpio_init(void);
 
-void pi_gpio_set_mode(uint8_t bcm_pin, int mode);
-void pi_gpio_set_value(uint8_t bcm_pin, int value);
-int pi_gpio_get_value(uint8_t bcm_pin);
+void
+pi_gpio_set_mode(uint8_t bcm_pin, int mode);
+void
+pi_gpio_set_value(uint8_t bcm_pin, int value);
+int
+pi_gpio_get_value(uint8_t bcm_pin);
 
 /*
  * Enable/disable the internal pull-up/down on a pin. Supports both the
@@ -38,7 +42,8 @@ int pi_gpio_get_value(uint8_t bcm_pin);
  * GPIO_PUP_PDN_CNTRL registers, auto-detected. Needed for buttons wired to
  * ground (use PI_GPIO_PULL_UP so an unpressed pin reads 1, pressed reads 0).
  */
-void pi_gpio_set_pull(uint8_t bcm_pin, int pull);
+void
+pi_gpio_set_pull(uint8_t bcm_pin, int pull);
 
 #ifdef __cplusplus
 }

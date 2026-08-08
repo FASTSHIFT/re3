@@ -20,56 +20,56 @@
 
 #define BLOCK_SIZE (4 * 1024)
 
-static volatile uint32_t* gpio = NULL;
+static volatile uint32_t *gpio = NULL;
 
 /* GPIO 寄存器字偏移（相对 GPIO 块起始）*/
 #define GPIO_REG_SET (gpio + 7)  /* GPSET0 @ 0x1C */
 #define GPIO_REG_CLR (gpio + 10) /* GPCLR0 @ 0x28 */
 #define GPIO_REG_LEV (gpio + 13) /* GPLEV0 @ 0x34 */
 
-int pi_gpio_init(void)
+int
+pi_gpio_init(void)
 {
-    int fd = open("/dev/gpiomem", O_RDWR | O_SYNC);
-    if (fd < 0) {
-        perror("open /dev/gpiomem");
-        return -1;
-    }
+	int fd = open("/dev/gpiomem", O_RDWR | O_SYNC);
+	if(fd < 0) {
+		perror("open /dev/gpiomem");
+		return -1;
+	}
 
-    void* map = mmap(NULL, BLOCK_SIZE, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
-    close(fd);
+	void *map = mmap(NULL, BLOCK_SIZE, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+	close(fd);
 
-    if (map == MAP_FAILED) {
-        perror("mmap gpiomem");
-        return -1;
-    }
+	if(map == MAP_FAILED) {
+		perror("mmap gpiomem");
+		return -1;
+	}
 
-    gpio = (volatile uint32_t*)map;
-    return 0;
+	gpio = (volatile uint32_t *)map;
+	return 0;
 }
 
-void pi_gpio_set_mode(uint8_t bcm_pin, int mode)
+void
+pi_gpio_set_mode(uint8_t bcm_pin, int mode)
 {
-    if (!gpio)
-        return;
-    int reg = bcm_pin / 10;        /* GPFSELn */
-    int shift = (bcm_pin % 10) * 3;
-    uint32_t v = gpio[reg];
-    v &= ~(0x7u << shift);
-    if (mode == PI_GPIO_OUTPUT)
-        v |= (0x1u << shift); /* 001 = output; INPUT=000 */
-    gpio[reg] = v;
+	if(!gpio) return;
+	int reg = bcm_pin / 10; /* GPFSELn */
+	int shift = (bcm_pin % 10) * 3;
+	uint32_t v = gpio[reg];
+	v &= ~(0x7u << shift);
+	if(mode == PI_GPIO_OUTPUT) v |= (0x1u << shift); /* 001 = output; INPUT=000 */
+	gpio[reg] = v;
 }
 
-void pi_gpio_set_value(uint8_t bcm_pin, int value)
+void
+pi_gpio_set_value(uint8_t bcm_pin, int value)
 {
-    if (!gpio)
-        return;
-    value ? (*GPIO_REG_SET = (1u << bcm_pin)) : (*GPIO_REG_CLR = (1u << bcm_pin));
+	if(!gpio) return;
+	value ? (*GPIO_REG_SET = (1u << bcm_pin)) : (*GPIO_REG_CLR = (1u << bcm_pin));
 }
 
-int pi_gpio_get_value(uint8_t bcm_pin)
+int
+pi_gpio_get_value(uint8_t bcm_pin)
 {
-    if (!gpio)
-        return 0;
-    return (*GPIO_REG_LEV >> bcm_pin) & 0x1u;
+	if(!gpio) return 0;
+	return (*GPIO_REG_LEV >> bcm_pin) & 0x1u;
 }

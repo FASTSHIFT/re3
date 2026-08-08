@@ -1,8 +1,9 @@
 name: re3 RPi GBM build + PC build
 
 # Builds two configurations on every push/PR:
-#   1. rpi-gbm  – armhf cross-compile for Raspberry Pi Zero 2 W (GBM + SPI)
-#   2. linux-glfw – native x86-64 Linux GL3/GLFW (smoke test)
+#   1. format-check – clang-format diff on new/modified source files
+#   2. rpi-gbm      – armhf cross-compile for Raspberry Pi Zero 2 W (GBM + SPI)
+#   3. linux-glfw   – native x86-64 Linux GL3/GLFW (smoke test)
 
 on:
   pull_request:
@@ -10,6 +11,31 @@ on:
     branches: ['**']
 
 jobs:
+  # ── Job 0: clang-format check ────────────────────────────────────────────
+  format-check:
+    name: clang-format check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: false   # don't need vendor for format check
+
+      - name: Install clang-format
+        run: sudo apt-get install -y --no-install-recommends clang-format
+
+      - name: Check format (our new files)
+        run: |
+          # Check files introduced or heavily modified in this branch.
+          # Exclude vendor/ and auto-generated shader .inc files.
+          FILES=$(git diff --name-only --diff-filter=ACM origin/HEAD...HEAD 2>/dev/null || \
+                  git diff --name-only --diff-filter=ACM HEAD~1...HEAD) || true
+          CPP_FILES=$(echo "$FILES" | grep -E '\.(cpp|c|h)$' | grep -v vendor/ | grep -v _gl\.inc)
+          if [ -z "$CPP_FILES" ]; then
+            echo "No C/C++ files to check."
+            exit 0
+          fi
+          echo "Checking: $CPP_FILES"
+          clang-format --dry-run --Werror $CPP_FILES
   # ── Job 1: RPi armhf cross-compile (GBM + SPI skeleton) ──────────────────
   rpi-gbm:
     name: RPi GBM+SPI (armhf cross)

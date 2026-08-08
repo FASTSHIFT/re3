@@ -15,10 +15,14 @@ extern "C" {
 #define PI_GPIO_INPUT 0
 #define PI_GPIO_OUTPUT 1
 
-int pi_gpio_init(void);
-void pi_gpio_set_mode(uint8_t bcm_pin, int mode);
-void pi_gpio_set_value(uint8_t bcm_pin, int value);
-int pi_gpio_get_value(uint8_t bcm_pin);
+int
+pi_gpio_init(void);
+void
+pi_gpio_set_mode(uint8_t bcm_pin, int mode);
+void
+pi_gpio_set_value(uint8_t bcm_pin, int value);
+int
+pi_gpio_get_value(uint8_t bcm_pin);
 
 #ifdef __cplusplus
 }
