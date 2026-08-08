@@ -146,13 +146,23 @@ gpio_capturePad(int padID)
 		if(fx || fb) s.RightStickX = (int16)((fb ? 128 : 0) - (fx ? 128 : 0));
 	} else {
 		// Menus and in-vehicle: YAXB = normal PlayStation face buttons.
-		// Y=Triangle, A=Cross, X=Square, B=Circle. In a car this makes
-		// A=Cross=accelerate, B=Circle=brake/reverse work as expected; in
-		// menus Cross confirms and Triangle/Circle back out.
+		// Y=Triangle, A=Cross, X=Square. In a car A=Cross=accelerate,
+		// X=Square=brake/reverse work as expected; in menus Cross confirms
+		// and Triangle backs out.
 		if(fy) s.Triangle = 255;
 		if(fa) s.Cross = 255;
 		if(fx) s.Square = 255;
-		if(fb) s.Circle = 255;
+		// B differs by context:
+		//   in a vehicle -> handbrake. Under the default control config
+		//                   (Mode 0) the handbrake is read from RightShoulder1
+		//                   (see CPad::GetHandBrake), so map B there.
+		//   in menus      -> Circle (back/cancel).
+		if(fb) {
+			if(inMenu)
+				s.Circle = 255;
+			else
+				s.RightShoulder1 = 255;
+		}
 	}
 
 	// --- Shoulders ---
