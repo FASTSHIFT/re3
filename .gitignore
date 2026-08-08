@@ -370,6 +370,8 @@ build-fbev/
 build-sdl/
 build-native/
 build-fbev-pc/
+# Any other local build directories
+build-*/
 _debug_frames/
 rpi-sysroot/
 # Local convenience symlink to GTA3 assets

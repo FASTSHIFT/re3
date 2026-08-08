@@ -95,6 +95,18 @@ if(${PROJECT}_INPUT_EVDEV)
     message(STATUS "${PROJECT}_INPUT_EVDEV enabled: evdev keyboard/mouse/gamepad input")
 endif()
 
+# Simplified Chinese localization. Reuses the game's Japanese CJK font pipeline
+# (big glyph atlas + full-width layout) but widens the atlas geometry to hold
+# ~1600 Chinese glyphs (64 cols x 32 rows vs Japanese 48 x 25.6). Ship the
+# Chinese assets in the Japanese slots (JAPANESE.GXT + MODELS/FONTS_J.TXD) and
+# select the Japanese language; those are produced offline by tools/gen_cn_font
+# + tools/png2txd (see docs/11). Requires MORE_LANGUAGES (default on).
+option(${PROJECT}_CHINESE "Simplified Chinese via the CJK font pipeline (widened atlas)" OFF)
+if(${PROJECT}_CHINESE)
+    add_compile_definitions(RE3_CHINESE)
+    message(STATUS "${PROJECT}_CHINESE enabled: Simplified Chinese localization")
+endif()
+
 # Desktop/emulator debug backends for the GBM skeleton: present the readback in
 # an SDL2 window and/or take keyboard input from SDL2. Lets the exact GBM render
 # path (EGL+GBM surfaceless GLES2) run and be debugged on a desktop. See docs/08.

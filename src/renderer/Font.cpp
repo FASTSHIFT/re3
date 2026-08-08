@@ -42,6 +42,32 @@ uint8 CFont::LanguageSet = FONT_LANGSET_EFIGS;
 int32 CFont::Slot = -1;
 #define JAP_TERMINATION (0x8000 | '~')
 
+// CJK glyph atlas geometry. The stock Japanese font is a 48-col grid in a
+// 1024-wide texture with 25.6 "rows" of UV (~1200 glyph capacity). Simplified
+// Chinese needs ~1600 glyphs, so RE3_CHINESE widens the grid to 64 cols x 32
+// rows in a 1024x512 atlas (2048 capacity). The Japanese draw path below reads
+// these constants instead of the hardcoded 48/1024/25.6 so both fit the same
+// code. Keep in sync with tools/gen_cn_font.py (--cols / atlas size).
+#ifdef RE3_CHINESE
+#define CJK_COLS      64
+#define CJK_ROWS_UV   32.0f   // texture_height / cell = 512 / 16
+#define CJK_TEXW      1024.0f // texture width in px
+#define CJK_CELLW     16.0f   // cell width in px (advance/UV unit)
+#define CJK_ADVANCE   24.0f   // on-screen advance between CJK glyphs
+#define CJK_DRAWW     24.0f   // on-screen drawn glyph width  (== advance: no overlap)
+#define CJK_DRAWH     24.0f   // on-screen drawn glyph height (square CJK cell)
+// Line height between wrapped CJK lines (must exceed CJK_DRAWH so rows don't
+// overlap). Replaces the stock Japanese 32/2.75+2 (~13.6px), too tight for our
+// bigger glyphs.
+#define CJK_LINEH     (26.0f * Details.scaleY)
+#else
+#define CJK_COLS      48
+#define CJK_ROWS_UV   25.6f
+#define CJK_TEXW      1024.0f
+#define CJK_CELLW     21.0f
+#define CJK_ADVANCE   29.4f
+#endif
+
 int16 CFont::Size[LANGSET_MAX][MAX_FONTS][193] = {
 	{
 #else
@@ -523,9 +549,9 @@ CFont::PrintChar(float x, float y, wchar c)
 	float yoff = c / 16;
 #ifdef MORE_LANGUAGES
 	if (IsJapaneseFont()) {
-		w = 21.0f;
-		xoff = (float)(c % 48);
-		yoff = c / 48;
+		w = CJK_CELLW;
+		xoff = (float)(c % CJK_COLS);
+		yoff = c / CJK_COLS;
 	}
 #endif
 
@@ -577,7 +603,12 @@ CFont::PrintChar(float x, float y, wchar c)
 #else
 				Details.style, // BUG: game doesn't add bank
 #endif
-#ifdef FIX_BUGS
+#ifdef RE3_CHINESE
+				CRect(x + SCREEN_SCALE_X(Details.dropShadowPosition),
+					y + SCREEN_SCALE_Y(Details.dropShadowPosition),
+					x + SCREEN_SCALE_X(Details.dropShadowPosition) + CJK_DRAWW * Details.scaleX,
+					y + SCREEN_SCALE_Y(Details.dropShadowPosition) + CJK_DRAWH * Details.scaleY),
+#elif defined(FIX_BUGS)
 				CRect(x + SCREEN_SCALE_X(Details.dropShadowPosition),
 					y + SCREEN_SCALE_Y(Details.dropShadowPosition),
 					x + SCREEN_SCALE_X(Details.dropShadowPosition) + 32.0f * Details.scaleX * 1.0f,
@@ -589,20 +620,26 @@ CFont::PrintChar(float x, float y, wchar c)
 					y + Details.dropShadowPosition + 40.0f * Details.scaleY / 2.75f),
 #endif
 				Details.dropColor,
-				xoff * w / 1024.0f, yoff / 25.6f,
-				xoff * w / 1024.0f + (1.0f / 48.0f) - 0.001f, yoff / 25.6f,
-				xoff * w / 1024.0f, (yoff + 1.0f) / 25.6f,
-				xoff * w / 1024.0f + (1.0f / 48.0f) - 0.001f, (yoff + 1.0f) / 25.6f - 0.0001f);
+				xoff * w / CJK_TEXW, yoff / CJK_ROWS_UV,
+				xoff * w / CJK_TEXW + (1.0f / CJK_COLS) - 0.001f, yoff / CJK_ROWS_UV,
+				xoff * w / CJK_TEXW, (yoff + 1.0f) / CJK_ROWS_UV,
+				xoff * w / CJK_TEXW + (1.0f / CJK_COLS) - 0.001f, (yoff + 1.0f) / CJK_ROWS_UV - 0.0001f);
 		}
 		CSprite2d::AddSpriteToBank(Details.bank + Details.style,	// BUG: game doesn't add bank
+#ifdef RE3_CHINESE
+			CRect(x, y,
+				x + CJK_DRAWW * Details.scaleX,
+				y + CJK_DRAWH * Details.scaleY),
+#else
 			CRect(x, y,
 				x + 32.0f * Details.scaleX * 1.0f,
 				y + 40.0f * Details.scaleY / 2.75f),
+#endif
 			Details.color,
-			xoff * w / 1024.0f, yoff / 25.6f,
-			xoff * w / 1024.0f + (1.0f / 48.0f) - 0.001f, yoff / 25.6f,
-			xoff * w / 1024.0f, (yoff + 1.0f) / 25.6f - 0.002f,
-			xoff * w / 1024.0f + (1.0f / 48.0f) - 0.001f, (yoff + 1.0f) / 25.6f - 0.0001f);
+			xoff * w / CJK_TEXW, yoff / CJK_ROWS_UV,
+			xoff * w / CJK_TEXW + (1.0f / CJK_COLS) - 0.001f, yoff / CJK_ROWS_UV,
+			xoff * w / CJK_TEXW, (yoff + 1.0f) / CJK_ROWS_UV - 0.002f,
+			xoff * w / CJK_TEXW + (1.0f / CJK_COLS) - 0.001f, (yoff + 1.0f) / CJK_ROWS_UV - 0.0001f);
 #endif
 	}else
 	{
@@ -713,7 +750,11 @@ CFont::PrintString(float xstart, float ystart, wchar *s)
 						x = xstart;
 #ifdef MORE_LANGUAGES
 					if (IsJapaneseFont())
+#ifdef RE3_CHINESE
+						y += CJK_LINEH;
+#else
 						y += 32.0f * CFont::Details.scaleY / 2.75f + 2.0f * CFont::Details.scaleY;
+#endif
 					else
 #endif
 						y += 32.0f * CFont::Details.scaleY * 0.5f + 2.0f * CFont::Details.scaleY;
@@ -752,7 +793,11 @@ CFont::PrintString(float xstart, float ystart, wchar *s)
 					else
 						x = 0.0f;
 
+#ifdef RE3_CHINESE
+					y += CJK_LINEH;
+#else
 					y += 32.0f * CFont::Details.scaleY / 2.75f + 2.0f * CFont::Details.scaleY;
+#endif
 					numSpaces = 0;
 					first = true;
 					lineLength = 0.0f;
@@ -775,7 +820,11 @@ CFont::PrintString(float xstart, float ystart, wchar *s)
 				x = xstart;
 			else
 				x = 0.0f;
+#ifdef RE3_CHINESE
+			y += CJK_LINEH;
+#else
 			y += 32.0f * CFont::Details.scaleY / 2.75f + 2.0f * CFont::Details.scaleY;
+#endif
 			numSpaces = 0;
 			first = true;
 			lineLength = 0.0f;
@@ -852,7 +901,11 @@ CFont::GetNumberLines(float xstart, float ystart, wchar *s)
 			// Why even?
 #ifdef MORE_LANGUAGES
 			if (IsJapanese())
+#ifdef RE3_CHINESE
+				y += CJK_LINEH;
+#else
 				y += 32.0f * CFont::Details.scaleY / 2.75f + 2.0f * CFont::Details.scaleY;
+#endif
 			else
 #endif
 				y += 32.0f * CFont::Details.scaleY * 0.5f + 2.0f * CFont::Details.scaleY;
@@ -963,7 +1016,11 @@ CFont::GetTextRect(CRect *rect, float xstart, float ystart, wchar *s)
 			rect->right = xstart + maxlength/2 + 4.0f;
 #ifdef MORE_LANGUAGES
 			if (IsJapaneseFont()) {
+#ifdef RE3_CHINESE
+				rect->bottom = CJK_LINEH * numLines + ystart + (4.0f / 2.75f);
+#else
 				rect->bottom = (32.0f * CFont::Details.scaleY / 2.75f + 2.0f * CFont::Details.scaleY) * numLines + ystart + (4.0f / 2.75f);
+#endif
 				rect->top = ystart - (4.0f / 2.75f);
 			} else {
 #endif
@@ -977,7 +1034,11 @@ CFont::GetTextRect(CRect *rect, float xstart, float ystart, wchar *s)
 			rect->right = xstart + Details.centreSize*0.5f + 4.0f;
 #ifdef MORE_LANGUAGES
 			if (IsJapaneseFont()) {
+#ifdef RE3_CHINESE
+				rect->bottom = CJK_LINEH * numLines + ystart + (4.0f / 2.75f);
+#else
 				rect->bottom = (32.0f * CFont::Details.scaleY / 2.75f + 2.0f * CFont::Details.scaleY) * numLines + ystart + (4.0f / 2.75f);
+#endif
 				rect->top = ystart - (4.0f / 2.75f);
 			} else {
 #endif
@@ -994,7 +1055,11 @@ CFont::GetTextRect(CRect *rect, float xstart, float ystart, wchar *s)
 		rect->bottom = ystart - 4.0f + 4.0f;
 #ifdef MORE_LANGUAGES
 		if (IsJapaneseFont())
+#ifdef RE3_CHINESE
+			rect->top = CJK_LINEH * numLines + ystart + 2.0f + (4.0f / 2.75f);
+#else
 			rect->top = (32.0f * CFont::Details.scaleY / 2.75f + 2.0f * CFont::Details.scaleY) * numLines + ystart + 2.0f + (4.0f / 2.75f);
+#endif
 		else
 #endif
 			rect->top = (32.0f * CFont::Details.scaleY * 0.5f + 2.0f * CFont::Details.scaleY) * numLines + ystart + 2.0f + 2.0f;
@@ -1077,7 +1142,11 @@ CFont::PrintStringFromBottom(float x, float y, wchar *str)
 {
 #ifdef MORE_LANGUAGES
 	if (IsJapaneseFont())
+#ifdef RE3_CHINESE
+		y -= CJK_LINEH * GetNumberLines(x, y, str);
+#else
 		y -= (32.0f * CFont::Details.scaleY / 2.75f + 2.0f * CFont::Details.scaleY) * GetNumberLines(x, y, str);
+#endif
 	else
 #endif
 		y -= (32.0f * CFont::Details.scaleY * 0.5f + 2.0f * CFont::Details.scaleY) * GetNumberLines(x, y, str);
@@ -1128,7 +1197,7 @@ CFont::GetCharacterWidth(wchar c)
 		switch (Details.style)
 		{
 		case FONT_JAPANESE:
-			return 29.4f;
+			return CJK_ADVANCE;
 		case FONT_BANK:
 			return 10.0f;
 		case FONT_PAGER:
@@ -1174,7 +1243,7 @@ CFont::GetCharacterSize(wchar c)
 		switch (Details.style)
 		{
 		case FONT_JAPANESE:
-			return 29.4f * Details.scaleX;
+			return CJK_ADVANCE * Details.scaleX;
 		case FONT_BANK:
 			return 10.0f * Details.scaleX;
 		case FONT_PAGER:
