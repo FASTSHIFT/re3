@@ -156,8 +156,17 @@ gpio_capturePad(int padID)
 	}
 
 	// --- Shoulders ---
-	// L = fire/shoot (Circle).
-	if(p(GK_L)) s.Circle = 255;
+	// L shoulder:
+	//   on foot      -> fire/shoot (Circle).
+	//   in a vehicle -> horn. With the default control config (Mode 0) the
+	//                   horn is read from LeftShock (see CPad::GetHorn), so map
+	//                   L to LeftShock while driving.
+	if(p(GK_L)) {
+		if(onFoot)
+			s.Circle = 255;
+		else
+			s.LeftShock = 255;
+	}
 
 	// R shoulder:
 	//   in a vehicle -> aim/target (LeftShoulder1), as before.
