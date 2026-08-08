@@ -7,10 +7,11 @@
  *
  * SPDX-License-Identifier: MIT
  */
+/* _GNU_SOURCE must be the very first thing before any system headers. */
+#define _GNU_SOURCE
 #include "st7789.h"
 #include "pi_gpio.h"
 
-#define _GNU_SOURCE /* nanosleep, etc. on strict cross-compile toolchains */
 #include <errno.h>
 #include <fcntl.h>
 #include <linux/spi/spidev.h>
