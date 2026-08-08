@@ -1,9 +1,9 @@
-name: re3 RPi GBM build + PC build
+name: re3 build
 
-# Builds two configurations on every push/PR:
-#   1. format-check – clang-format diff on new/modified source files
-#   2. rpi-gbm      – armhf cross-compile for Raspberry Pi Zero 2 W (GBM + SPI)
-#   3. linux-glfw   – native x86-64 Linux GL3/GLFW (smoke test)
+# Three lean jobs:
+#   format  – clang-format check on changed C/C++ files
+#   linux   – native x86-64 GL3/GLFW Release build
+#   rpi     – armhf cross-compile GBM+SPI Release build
 
 on:
   pull_request:
@@ -11,83 +11,118 @@ on:
     branches: ['**']
 
 jobs:
-  # ── Job 0: clang-format check ────────────────────────────────────────────
-  format-check:
-    name: clang-format check
+  # ── format ────────────────────────────────────────────────────────────────
+  format:
+    name: clang-format
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
         with:
-          submodules: false   # don't need vendor for format check
+          submodules: false
+          fetch-depth: 2   # need parent commit for diff
 
-      - name: Install clang-format
-        run: sudo apt-get install -y --no-install-recommends clang-format
+      - run: sudo apt-get install -y --no-install-recommends clang-format
 
-      - name: Check format (our new files)
+      - name: Check
         run: |
-          # Determine the base branch for diff. On a fork the upstream default
-          # branch may not be fetched, so fall back to comparing with HEAD~1.
-          BASE=""
-          if git fetch origin main 2>/dev/null; then
-            BASE="origin/main"
-          elif git fetch origin master 2>/dev/null; then
-            BASE="origin/master"
-          fi
-
-          if [ -n "$BASE" ]; then
-            FILES=$(git diff --name-only --diff-filter=ACM "$BASE"...HEAD)
-          else
-            FILES=$(git diff --name-only --diff-filter=ACM HEAD~1...HEAD)
-          fi
-
-          CPP_FILES=$(echo "$FILES" | grep -E '\.(cpp|c|h)$' | grep -v vendor/ | grep -v '_gl\.inc' || true)
-          if [ -z "$CPP_FILES" ]; then
-            echo "No C/C++ files to check."
+          # Files changed in this push/PR vs their parent
+          BASE=$(git rev-parse HEAD^ 2>/dev/null || echo "")
+          if [ -z "$BASE" ]; then
+            echo "Single-commit history, skipping diff check."
             exit 0
           fi
-          echo "Checking: $CPP_FILES"
-          clang-format --dry-run --Werror $CPP_FILES
-  # ── Job 1: RPi armhf cross-compile (GBM + SPI skeleton) ──────────────────
-  rpi-gbm:
-    name: RPi GBM+SPI (armhf cross)
-    runs-on: ubuntu-latest
+          FILES=$(git diff --name-only --diff-filter=ACM "$BASE" HEAD \
+                  | grep -E '\.(cpp|c|h)$' \
+                  | grep -v 'vendor/' \
+                  | grep -v '_gl\.inc$' || true)
+          if [ -z "$FILES" ]; then echo "No C/C++ files changed."; exit 0; fi
+          echo "Checking: $FILES"
+          clang-format --dry-run --Werror $FILES
 
+  # ── linux ─────────────────────────────────────────────────────────────────
+  linux:
+    name: Linux GL3/GLFW
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
         with:
           submodules: recursive
 
-      # Install the armhf cross toolchain and add the armhf architecture so
-      # we can install RPI-matching library headers via dpkg.
-      - name: Install cross toolchain
+      - name: Dependencies
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y --no-install-recommends \
-            gcc-arm-linux-gnueabihf g++-arm-linux-gnueabihf \
-            cmake ninja-build pkg-config
-          # Add armhf arch for library headers
-          sudo dpkg --add-architecture armhf
+            cmake ninja-build \
+            libglfw3-dev \
+            libopenal-dev \
+            libmpg123-dev
+
+      - name: Configure
+        run: |
+          cmake -G Ninja -B build \
+            -DLIBRW_PLATFORM=GL3 \
+            -DLIBRW_GL3_GFXLIB=GLFW \
+            -DRE3_AUDIO=OAL \
+            -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build
+        run: cmake --build build -j$(nproc)
+
+      - name: Upload
+        uses: actions/upload-artifact@v4
+        with:
+          name: re3-linux-glfw
+          path: build/src/re3
+
+  # ── rpi ───────────────────────────────────────────────────────────────────
+  rpi:
+    name: RPi GBM+SPI (armhf)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Toolchain + sysroot
+        run: |
+          # Cross compiler
           sudo apt-get update -qq
-          # GLES2 / EGL / GBM / libopenal / libasound headers for armhf
+          sudo apt-get install -y --no-install-recommends \
+            cmake ninja-build \
+            gcc-arm-linux-gnueabihf g++-arm-linux-gnueabihf
+
+          # Ubuntu 24.04 (Noble) ships armhf *desktop* packages only on
+          # ports.ubuntu.com. Add that source, then install dev headers.
+          sudo dpkg --add-architecture armhf
+          sudo tee /etc/apt/sources.list.d/armhf-ports.list > /dev/null << 'EOF'
+          deb [arch=armhf] http://ports.ubuntu.com/ubuntu-ports noble main universe
+          deb [arch=armhf] http://ports.ubuntu.com/ubuntu-ports noble-updates main universe
+          deb [arch=armhf] http://ports.ubuntu.com/ubuntu-ports noble-security main universe
+          EOF
+          # Pin amd64/i386 packages to the main archive to avoid conflicts
+          sudo tee /etc/apt/preferences.d/arch-pin > /dev/null << 'EOF'
+          Package: *
+          Pin: release o=Ubuntu
+          Pin-Priority: 500
+
+          Package: *:armhf
+          Pin: release o=Ubuntu
+          Pin-Priority: 500
+          EOF
+          sudo apt-get update -qq
           sudo apt-get install -y --no-install-recommends \
             libgles2-mesa-dev:armhf \
             libegl-dev:armhf \
             libgbm-dev:armhf \
             libopenal-dev:armhf \
-            libasound2-dev:armhf \
-            libmpg123-dev:armhf \
-            libsndfile1-dev:armhf \
-            libgbm-dev:armhf || true  # non-fatal: some may not exist on this runner
+            libmpg123-dev:armhf
 
-      # Build the sysroot path expected by rpi-armhf-toolchain.cmake.
-      # On CI we point it at the system's armhf multiarch tree.
-      - name: Configure RPi GBM build
+      - name: Configure
         run: |
-          # Override sysroot to the cross-compile multiarch tree already present.
-          # The toolchain file uses RPI_SYSROOT; pass it to use the installed armhf headers.
-          cmake -G Ninja -B build-ci-gbm \
+          cmake -G Ninja -B build \
             -DCMAKE_TOOLCHAIN_FILE=rpi-armhf-toolchain.cmake \
             -DRPI_SYSROOT=/usr \
+            -DLIBRW_PLATFORM=GL3 \
             -DLIBRW_GL3_GFXLIB=GBM \
             -DRE3_OUTPUT_SPI=ON \
             -DRE3_RPI=ON \
@@ -97,59 +132,11 @@ jobs:
             -DCMAKE_BUILD_TYPE=Release \
             -DCMAKE_EXE_LINKER_FLAGS="-L/usr/lib/arm-linux-gnueabihf -Wl,-rpath-link,/usr/lib/arm-linux-gnueabihf"
 
-      - name: Build (RPi GBM+SPI)
-        run: cmake --build build-ci-gbm -j$(nproc)
+      - name: Build
+        run: cmake --build build -j$(nproc)
 
-      - name: Verify binary
-        run: |
-          file build-ci-gbm/src/re3
-          arm-linux-gnueabihf-size build-ci-gbm/src/re3
-
-      - name: Upload RPi binary
+      - name: Upload
         uses: actions/upload-artifact@v4
         with:
           name: re3-rpi-gbm-armhf
-          path: build-ci-gbm/src/re3
-          if-no-files-found: error
-
-  # ── Job 2: Native Linux x86-64, GL3+GLFW (smoke test, no conan) ──────────
-  linux-glfw:
-    name: Linux GLFW GL3 (x86-64)
-    runs-on: ubuntu-latest
-
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          submodules: recursive
-
-      - name: Install dependencies
-        run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y --no-install-recommends \
-            cmake ninja-build \
-            libglfw3-dev \
-            libopenal-dev \
-            libgles2-mesa-dev \
-            libegl-dev \
-            libmpg123-dev \
-            libsndfile1-dev
-
-      - name: Configure (Linux GLFW)
-        run: |
-          cmake -G Ninja -B build-ci-glfw \
-            -DLIBRW_GL3_GFXLIB=GLFW \
-            -DRE3_AUDIO=OAL \
-            -DCMAKE_BUILD_TYPE=RelWithDebInfo
-
-      - name: Build (Linux GLFW)
-        run: cmake --build build-ci-glfw -j$(nproc)
-
-      - name: Verify binary
-        run: file build-ci-glfw/src/re3
-
-      - name: Upload Linux binary
-        uses: actions/upload-artifact@v4
-        with:
-          name: re3-linux-glfw-x86-64
-          path: build-ci-glfw/src/re3
-          if-no-files-found: error
+          path: build/src/re3
