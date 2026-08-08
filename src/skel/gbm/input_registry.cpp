@@ -13,6 +13,9 @@
 #include <stdio.h>
 #include <string.h>
 
+#include "common.h"
+#include "Pad.h"
+
 static InputSource *sTable[INPUT_SOURCE_MAX];
 static int sCount = 0;
 
@@ -55,6 +58,11 @@ InputSource_TerminateAll(void)
 void
 InputSource_CapturePadAll(int padID)
 {
+	// Clear the shared pad state once here, then let every gamepad source OR
+	// its own contribution in. This lets multiple pad sources coexist (e.g.
+	// GPIO buttons + an evdev controller) without clobbering each other, which
+	// they would if each source cleared PCTempJoyState itself.
+	if(padID == 0) CPad::GetPad(0)->PCTempJoyState.Clear();
 	for(int i = 0; i < sCount; i++)
 		if(sTable[i]->capturePad) sTable[i]->capturePad(padID);
 }

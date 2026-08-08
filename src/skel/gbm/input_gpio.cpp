@@ -100,9 +100,10 @@ gpio_capturePad(int padID)
 {
 	if(padID != 0 || !sReady) return;
 
+	// PCTempJoyState is cleared once by InputSource_CapturePadAll before any
+	// source runs; we OR our contribution in (see input_registry.cpp).
 	CPad *pad = CPad::GetPad(0);
 	CControllerState &s = pad->PCTempJoyState;
-	s.Clear();
 
 	bool inMenu = !!FrontEndMenuManager.m_bMenuActive;
 
@@ -112,8 +113,10 @@ gpio_capturePad(int padID)
 	s.DPadDown = dd ? 255 : 0;
 	s.DPadLeft = dl ? 255 : 0;
 	s.DPadRight = dr ? 255 : 0;
-	s.LeftStickX = (int16)((dr ? 128 : 0) - (dl ? 128 : 0));
-	s.LeftStickY = (int16)((dd ? 128 : 0) - (du ? 128 : 0));
+	// Only write sticks when a direction is actually held, so we don't zero
+	// out a co-active evdev controller's stick (OR semantics, see registry).
+	if(dl || dr) s.LeftStickX = (int16)((dr ? 128 : 0) - (dl ? 128 : 0));
+	if(du || dd) s.LeftStickY = (int16)((dd ? 128 : 0) - (du ? 128 : 0));
 
 	// --- Face buttons YAXB ---
 	bool fy = p(GK_Y), fa = p(GK_A), fx = p(GK_X), fb = p(GK_B);
@@ -127,8 +130,8 @@ gpio_capturePad(int padID)
 	} else {
 		// In-game: YAXB = camera look via RightStick.
 		// Y=up, A=down, X=left, B=right (full deflection ±128).
-		s.RightStickY = (int16)((fa ? 128 : 0) - (fy ? 128 : 0));
-		s.RightStickX = (int16)((fb ? 128 : 0) - (fx ? 128 : 0));
+		if(fy || fa) s.RightStickY = (int16)((fa ? 128 : 0) - (fy ? 128 : 0));
+		if(fx || fb) s.RightStickX = (int16)((fb ? 128 : 0) - (fx ? 128 : 0));
 	}
 
 	// --- Shoulders ---
