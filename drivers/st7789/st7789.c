@@ -10,6 +10,7 @@
 #include "st7789.h"
 #include "pi_gpio.h"
 
+#define _GNU_SOURCE /* nanosleep, etc. on strict cross-compile toolchains */
 #include <errno.h>
 #include <fcntl.h>
 #include <linux/spi/spidev.h>
