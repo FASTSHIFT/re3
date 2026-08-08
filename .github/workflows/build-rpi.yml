@@ -63,8 +63,8 @@ jobs:
             -DLIBRW_PLATFORM=GL3 \
             -DLIBRW_GL3_GFXLIB=GLFW \
             -DRE3_AUDIO=OAL \
-            -DCMAKE_BUILD_TYPE=Release \
-            "-DCMAKE_CXX_FLAGS=-Wno-pedantic -Wno-unused-parameter -Wno-sign-compare -Wno-double-promotion -Wno-missing-field-initializers -Wno-deprecated-copy -Wno-reorder -Wno-class-memaccess -Wno-strict-aliasing"
+            -DRE3_STRICT_WARNINGS=OFF \
+            -DCMAKE_BUILD_TYPE=Release
 
       - name: Build
         run: cmake --build build -j$(nproc)
@@ -134,9 +134,10 @@ jobs:
             -DRE3_RPI_LEAN_FX=ON \
             -DRE3_TIMEBARS_LOG=ON \
             -DRE3_AUDIO=OAL \
+            -DRE3_STRICT_WARNINGS=OFF \
             -DCMAKE_BUILD_TYPE=Release \
-            "-DCMAKE_C_FLAGS=-Wno-pedantic -Wno-unused-parameter -Wno-strict-aliasing -Wno-maybe-uninitialized -Wno-missing-field-initializers -I/usr/include -I/usr/include/arm-linux-gnueabihf" \
-            "-DCMAKE_CXX_FLAGS=-Wno-pedantic -Wno-unused-parameter -Wno-sign-compare -Wno-double-promotion -Wno-missing-field-initializers -Wno-deprecated-copy -Wno-reorder -Wno-class-memaccess -Wno-strict-aliasing -Wno-maybe-uninitialized -Wno-implicit-fallthrough -I/usr/include -I/usr/include/arm-linux-gnueabihf" \
+            "-DCMAKE_C_FLAGS=-I/usr/include -I/usr/include/arm-linux-gnueabihf" \
+            "-DCMAKE_CXX_FLAGS=-I/usr/include -I/usr/include/arm-linux-gnueabihf" \
             "-DCMAKE_EXE_LINKER_FLAGS=-L/usr/lib/arm-linux-gnueabihf -Wl,-rpath-link,/usr/lib/arm-linux-gnueabihf"
 
       - name: Build

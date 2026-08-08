@@ -117,6 +117,48 @@ if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU" OR CMAKE_CXX_COMPILER_ID STREQUAL "Clang
                 -Wpedantic
         )
     endif()
+    # When OFF (e.g. CI on a modern GCC), silence the large set of pre-existing
+    # upstream re3 warnings that only surface on newer compilers. Appended
+    # *after* -Wall/-Wextra/-Wpedantic so they take effect. Newly written code
+    # should still be warning-clean under the strict set (turn this ON locally).
+    option(${PROJECT}_STRICT_WARNINGS "Treat all warnings strictly (no upstream suppressions)" ON)
+    if(NOT ${PROJECT}_STRICT_WARNINGS)
+        target_compile_options(${EXECUTABLE}
+            PRIVATE
+                -Wno-pedantic
+                -Wno-unused-parameter
+                -Wno-sign-compare
+                -Wno-double-promotion
+                -Wno-missing-field-initializers
+                -Wno-deprecated-copy
+                -Wno-reorder
+                -Wno-class-memaccess
+                -Wno-strict-aliasing
+                -Wno-maybe-uninitialized
+                -Wno-implicit-fallthrough
+                -Wno-parentheses
+                -Wno-unused-variable
+                -Wno-unused-but-set-variable
+                -Wno-ignored-qualifiers
+                -Wno-unknown-pragmas
+                -Wno-stringop-truncation
+                -Wno-stringop-overflow
+                -Wno-format-truncation
+                -Wno-array-bounds
+                -Wno-unused-result
+                -Wno-int-to-pointer-cast
+                -Wno-misleading-indentation
+                -Wno-format-overflow
+                -Wno-multichar
+                -Wno-invalid-offsetof
+                -Wno-type-limits
+                -Wno-restrict
+                -Wno-format
+                -Wno-cast-function-type
+                -Wno-unused-value
+                -Wno-unused-function
+        )
+    endif()
 elseif(CMAKE_CXX_COMPILER_ID STREQUAL "MSVC")
     target_compile_options(${EXECUTABLE}
         PUBLIC
@@ -170,6 +212,20 @@ if(LIBRW_GL3_GFXLIB STREQUAL "GBM")
 		)
 		target_include_directories(${EXECUTABLE} PRIVATE
 			${PROJECT_SOURCE_DIR}/drivers/st7789
+		)
+	endif()
+
+	# Our own new code (GBM skeleton + ST7789 driver) must stay warning-clean:
+	# compile just these files with -Werror so regressions fail the build,
+	# while upstream re3 code keeps warnings non-fatal.
+	if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU" OR CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
+		file(GLOB _re3_own_sources ${PROJECT_SOURCE_DIR}/src/skel/gbm/*.cpp)
+		set(_re3_own_c_sources
+			${PROJECT_SOURCE_DIR}/drivers/st7789/st7789.c
+			${PROJECT_SOURCE_DIR}/drivers/st7789/pi_gpio.c)
+		set_source_files_properties(
+			${_re3_own_sources} ${_re3_own_c_sources}
+			PROPERTIES COMPILE_OPTIONS "-Werror"
 		)
 	endif()
 
