@@ -1,9 +1,8 @@
 name: re3 cmake devkitA64 (Nintendo Switch)
-on:
-  pull_request:
-  push:
-  release:
-    types: published
+# Disabled: triggers commented out (builds managed by build-rpi.yml)
+# on:
+#   push:
+#   pull_request:
 jobs:
   build-nintendo-switch:
     runs-on: ubuntu-latest

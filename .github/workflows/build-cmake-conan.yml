@@ -1,9 +1,8 @@
 name: re3 conan+cmake
-on:
-  pull_request:
-  push:
-  release:
-    types: published
+# Disabled: triggers commented out (builds managed by build-rpi.yml)
+# on:
+#   push:
+#   pull_request:
 jobs:
   build-cmake:
     strategy:

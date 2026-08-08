@@ -1,10 +1,9 @@
 name: re3 premake x86
 
-on:
-  pull_request:
-  push:
-  release:
-    types: published
+# Disabled: triggers commented out (builds managed by build-rpi.yml)
+# on:
+#   push:
+#   pull_request:
 env:
   GLFW_VER: "3.3.2"
   GLFW_BASE: "glfw-3.3.2.bin.WIN32"

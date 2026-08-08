@@ -91,24 +91,28 @@ jobs:
             cmake ninja-build \
             gcc-arm-linux-gnueabihf g++-arm-linux-gnueabihf
 
-          # Ubuntu 24.04 (Noble) ships armhf *desktop* packages only on
-          # ports.ubuntu.com. Add that source, then install dev headers.
+          # Ubuntu 24.04 Noble: armhf packages live on ports.ubuntu.com, not
+          # on security.ubuntu.com. After dpkg --add-architecture armhf the
+          # default sources try to fetch armhf from security.ubuntu.com and
+          # fail with 404. Fix: restrict existing sources to amd64 and add a
+          # separate ports source for armhf only.
           sudo dpkg --add-architecture armhf
-          sudo tee /etc/apt/sources.list.d/armhf-ports.list > /dev/null << 'EOF'
-          deb [arch=armhf] http://ports.ubuntu.com/ubuntu-ports noble main universe
-          deb [arch=armhf] http://ports.ubuntu.com/ubuntu-ports noble-updates main universe
-          deb [arch=armhf] http://ports.ubuntu.com/ubuntu-ports noble-security main universe
-          EOF
-          # Pin amd64/i386 packages to the main archive to avoid conflicts
-          sudo tee /etc/apt/preferences.d/arch-pin > /dev/null << 'EOF'
-          Package: *
-          Pin: release o=Ubuntu
-          Pin-Priority: 500
 
-          Package: *:armhf
-          Pin: release o=Ubuntu
-          Pin-Priority: 500
-          EOF
+          # Restrict default amd64 sources so apt doesn't try armhf there
+          sudo sed -i 's/^deb \(http[s]*:\/\/\(archive\|security\|cloud\)\.ubuntu\.com\/ubuntu[^ ]*\) /deb [arch=amd64,i386] \1 /' /etc/apt/sources.list 2>/dev/null || true
+          # Handle deb822 format (sources.list.d/*.sources)
+          for f in /etc/apt/sources.list.d/*.sources; do
+            [ -f "$f" ] && sudo sed -i '/^Types:/a Architectures: amd64 i386' "$f" 2>/dev/null || true
+          done
+
+          # Add ports for armhf
+          echo "deb [arch=armhf] http://ports.ubuntu.com/ubuntu-ports noble main universe" \
+            | sudo tee /etc/apt/sources.list.d/ubuntu-armhf.list
+          echo "deb [arch=armhf] http://ports.ubuntu.com/ubuntu-ports noble-updates main universe" \
+            | sudo tee -a /etc/apt/sources.list.d/ubuntu-armhf.list
+          echo "deb [arch=armhf] http://ports.ubuntu.com/ubuntu-ports noble-security main universe" \
+            | sudo tee -a /etc/apt/sources.list.d/ubuntu-armhf.list
+
           sudo apt-get update -qq
           sudo apt-get install -y --no-install-recommends \
             libgles2-mesa-dev:armhf \
