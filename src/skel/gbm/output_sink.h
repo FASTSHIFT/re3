@@ -16,8 +16,7 @@
 
 #include <stdint.h>
 
-struct OutputSink
-{
+struct OutputSink {
 	// Called once after RW init with the render resolution. Returns true on
 	// success. A sink may present at a different resolution than the render
 	// size (e.g. a fixed panel); the skeleton scales into what present() wants.
@@ -38,6 +37,7 @@ struct OutputSink
 // Select the sink at build time. Exactly one is compiled/active per build:
 //   RE3_OUTPUT_SPI -> spi, RE3_OUTPUT_SDL -> sdl, otherwise -> fbdev.
 // Returns a static sink (never null).
-OutputSink *OutputSink_Get(void);
+OutputSink *
+OutputSink_Get(void);
 
 #endif /* RE3_OUTPUT_SINK_H */

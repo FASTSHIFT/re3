@@ -1,7 +1,7 @@
 name: re3 build
 
 # Three lean jobs:
-#   format  – clang-format check on changed C/C++ files
+#   format  – clang-format check on the C/C++ code we own
 #   linux   – native x86-64 GL3/GLFW Release build
 #   rpi     – armhf cross-compile GBM+SPI Release build
 
@@ -25,7 +25,11 @@ jobs:
 
       - name: Check
         run: |
-          # Files changed in this push/PR vs their parent
+          # Only enforce formatting on code we own. The repo .clang-format
+          # encodes our project style; the upstream re3 sources were never
+          # formatted to it, so we scope the check to our own directories.
+          # Keep this list in sync with tools/check-format.sh (pre-commit hook).
+          OWNED_REGEX='^(src/skel/gbm/|drivers/st7789/|tools/)'
           BASE=$(git rev-parse HEAD^ 2>/dev/null || echo "")
           if [ -z "$BASE" ]; then
             echo "Single-commit history, skipping diff check."
@@ -33,9 +37,9 @@ jobs:
           fi
           FILES=$(git diff --name-only --diff-filter=ACM "$BASE" HEAD \
                   | grep -E '\.(cpp|c|h)$' \
-                  | grep -v 'vendor/' \
-                  | grep -v '_gl\.inc$' || true)
-          if [ -z "$FILES" ]; then echo "No C/C++ files changed."; exit 0; fi
+                  | grep -E "$OWNED_REGEX" \
+                  || true)
+          if [ -z "$FILES" ]; then echo "No owned C/C++ files changed."; exit 0; fi
           echo "Checking: $FILES"
           clang-format --dry-run --Werror $FILES
 

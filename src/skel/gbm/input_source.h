@@ -17,30 +17,36 @@
 
 #define INPUT_SOURCE_MAX 4
 
-struct InputSource
-{
+struct InputSource {
 	void (*init)(void);
 	void (*poll)(void);
 	void (*terminate)(void);
-	void (*capturePad)(int padID);	// null if not a gamepad source
+	void (*capturePad)(int padID); // null if not a gamepad source
 	const char *name;
 };
 
 // Register a source. Called from each source's file-scope constructor / init.
-bool InputSource_Register(InputSource *src);
+bool
+InputSource_Register(InputSource *src);
 
 // Lifecycle: called from gbm.cpp once at startup/shutdown, and each frame.
-void InputSource_InitAll(void);
-void InputSource_PollAll(void);
-void InputSource_TerminateAll(void);
+void
+InputSource_InitAll(void);
+void
+InputSource_PollAll(void);
+void
+InputSource_TerminateAll(void);
 
 // Called from CapturePad each frame to let gamepad sources write PCTempJoyState.
-void InputSource_CapturePadAll(int padID);
+void
+InputSource_CapturePadAll(int padID);
 
 // Compatibility shim: returns the first registered source (SDL single-source builds).
-InputSource *InputSource_Get(void);
+InputSource *
+InputSource_Get(void);
 
 // Shared mouse feed (implemented in gbm.cpp, used by SDL/evdev sources).
-void GbmFeedMouse(double x, double y, int buttons, int wheel, bool inWindow);
+void
+GbmFeedMouse(double x, double y, int buttons, int wheel, bool inWindow);
 
 #endif /* RE3_INPUT_SOURCE_H */

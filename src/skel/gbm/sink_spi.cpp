@@ -26,34 +26,34 @@
 #include "st7789.h"
 
 // ---- state ----------------------------------------------------------------
-static st7789_t	*sDev = 0;
-static int		sW = 0, sH = 0;
-static int		sSwapRB = 0;
+static st7789_t *sDev = 0;
+static int sW = 0, sH = 0;
+static int sSwapRB = 0;
 
 // Double-buffering: two panel-sized RGB565 buffers ping-pong between the
 // fill path (main thread) and the flush path (SPI thread).
-static uint16_t	*sBuf[2] = {0, 0};	// [0] = being filled, [1] = being flushed
-static int		sFillIdx = 0;		// which buf the main thread writes into
+static uint16_t *sBuf[2] = {0, 0}; // [0] = being filled, [1] = being flushed
+static int sFillIdx = 0;           // which buf the main thread writes into
 
 // SPI background thread
-static pthread_t	sSpiThread;
-static sem_t		sSpiWork;	// main thread -> SPI: "new frame ready"
-static sem_t		sSpiDone;	// SPI -> main thread: "flush complete"
-static int		sSpiStop = 0;
-static int		sSpiInited = 0;
+static pthread_t sSpiThread;
+static sem_t sSpiWork; // main thread -> SPI: "new frame ready"
+static sem_t sSpiDone; // SPI -> main thread: "flush complete"
+static int sSpiStop = 0;
+static int sSpiInited = 0;
 
 // ---- SPI background thread ------------------------------------------------
 static void *
 spi_thread_func(void *)
 {
-	while (1) {
+	while(1) {
 		sem_wait(&sSpiWork);
-		if (sSpiStop) break;
+		if(sSpiStop) break;
 		// Flush the buffer the main thread just handed us (the OTHER index).
 		st7789_flush(sDev, sBuf[1 - sFillIdx]);
 		sem_post(&sSpiDone);
 	}
-	sem_post(&sSpiDone);	// unblock terminate()
+	sem_post(&sSpiDone); // unblock terminate()
 	return 0;
 }
 
@@ -61,13 +61,29 @@ spi_thread_func(void *)
 static void
 spi_dump(const uint16_t *buf, int w, int h)
 {
-	static const char *dir = 0; static int init=0, n=0, every=30;
-	if (!init) { init=1; dir=getenv("RE3_SPI_DUMP"); const char *e=getenv("RE3_SPI_DUMP_EVERY"); if(e) every=atoi(e); if(every<1) every=1; }
-	if (!dir || (n++ % every) != 0) return;
-	char path[512]; snprintf(path,sizeof(path),"%s/frame%04d.ppm",dir,n/every);
-	FILE *f=fopen(path,"wb"); if(!f) return;
-	fprintf(f,"P6\n%d %d\n255\n",w,h);
-	for(int i=0;i<w*h;i++){uint16_t p=buf[i];uint8_t rgb[3];rgb[0]=(uint8_t)((p>>11&0x1F)<<3);rgb[1]=(uint8_t)((p>>5&0x3F)<<2);rgb[2]=(uint8_t)((p&0x1F)<<3);fwrite(rgb,1,3,f);}
+	static const char *dir = 0;
+	static int init = 0, n = 0, every = 30;
+	if(!init) {
+		init = 1;
+		dir = getenv("RE3_SPI_DUMP");
+		const char *e = getenv("RE3_SPI_DUMP_EVERY");
+		if(e) every = atoi(e);
+		if(every < 1) every = 1;
+	}
+	if(!dir || (n++ % every) != 0) return;
+	char path[512];
+	snprintf(path, sizeof(path), "%s/frame%04d.ppm", dir, n / every);
+	FILE *f = fopen(path, "wb");
+	if(!f) return;
+	fprintf(f, "P6\n%d %d\n255\n", w, h);
+	for(int i = 0; i < w * h; i++) {
+		uint16_t p = buf[i];
+		uint8_t rgb[3];
+		rgb[0] = (uint8_t)((p >> 11 & 0x1F) << 3);
+		rgb[1] = (uint8_t)((p >> 5 & 0x3F) << 2);
+		rgb[2] = (uint8_t)((p & 0x1F) << 3);
+		fwrite(rgb, 1, 3, f);
+	}
 	fclose(f);
 }
 
@@ -75,29 +91,33 @@ spi_dump(const uint16_t *buf, int w, int h)
 static bool
 spi_init(int renderW, int renderH)
 {
-	(void)renderW; (void)renderH;
+	(void)renderW;
+	(void)renderH;
 
 	st7789_config_t cfg;
 	st7789_config_default(&cfg);
-	cfg.little_endian = 1;	// GLES GL_UNSIGNED_SHORT_5_6_5 on LE host = correct
+	cfg.little_endian = 1; // GLES GL_UNSIGNED_SHORT_5_6_5 on LE host = correct
 
 	const char *e;
-	if ((e = getenv("RE3_SPI_INVERT")) != 0) cfg.invert = atoi(e);
-	if ((e = getenv("RE3_SPI_ENDIAN")) != 0) cfg.little_endian = atoi(e);
-	if ((e = getenv("RE3_SPI_ROT"))    != 0) cfg.rotation = (st7789_rotation_t)atoi(e);
-	if ((e = getenv("RE3_SPI_HZ"))     != 0) cfg.spi_hz = (uint32_t)strtoul(e, 0, 10);
-	if ((e = getenv("RE3_SPI_BGR"))    != 0) sSwapRB = atoi(e);
+	if((e = getenv("RE3_SPI_INVERT")) != 0) cfg.invert = atoi(e);
+	if((e = getenv("RE3_SPI_ENDIAN")) != 0) cfg.little_endian = atoi(e);
+	if((e = getenv("RE3_SPI_ROT")) != 0) cfg.rotation = (st7789_rotation_t)atoi(e);
+	if((e = getenv("RE3_SPI_HZ")) != 0) cfg.spi_hz = (uint32_t)strtoul(e, 0, 10);
+	if((e = getenv("RE3_SPI_BGR")) != 0) sSwapRB = atoi(e);
 
 	st7789_tune_system(65536);
 
 	sDev = st7789_open(&cfg);
-	if (sDev == 0) { printf("spi: st7789_open failed\n"); return false; }
+	if(sDev == 0) {
+		printf("spi: st7789_open failed\n");
+		return false;
+	}
 	sW = st7789_get_width(sDev);
 	sH = st7789_get_height(sDev);
 
 	sBuf[0] = (uint16_t *)malloc((size_t)sW * sH * 2);
 	sBuf[1] = (uint16_t *)malloc((size_t)sW * sH * 2);
-	if (!sBuf[0] || !sBuf[1]) return false;
+	if(!sBuf[0] || !sBuf[1]) return false;
 	sFillIdx = 0;
 
 	// Semaphores: done starts at 1 (SPI thread "ready to accept first frame").
@@ -111,23 +131,21 @@ spi_init(int renderW, int renderH)
 	return true;
 }
 
-static inline void fill_buf(uint16_t *dst, const uint16_t *rgb565, int w, int h)
+static inline void
+fill_buf(uint16_t *dst, const uint16_t *rgb565, int w, int h)
 {
-	if (w == sW && h == sH && !sSwapRB) {
+	if(w == sW && h == sH && !sSwapRB) {
 		// Fast path: render size == panel, no channel swap.
 		// Rows are bottom-up in readback; memcpy them reversed.
-		for (int py = 0; py < sH; py++)
-			memcpy(dst + py * sW, rgb565 + (h - 1 - py) * w, (size_t)sW * 2);
+		for(int py = 0; py < sH; py++) memcpy(dst + py * sW, rgb565 + (h - 1 - py) * w, (size_t)sW * 2);
 	} else {
-		for (int py = 0; py < sH; py++) {
+		for(int py = 0; py < sH; py++) {
 			int ry = (py * h) / sH;
 			const uint16_t *srcRow = rgb565 + (h - 1 - ry) * w;
 			uint16_t *dstRow = dst + py * sW;
-			for (int px = 0; px < sW; px++) {
+			for(int px = 0; px < sW; px++) {
 				uint16_t p = srcRow[(px * w) / sW];
-				dstRow[px] = sSwapRB
-					? (uint16_t)(((p&0x1F)<<11)|((p>>5&0x3F)<<5)|((p>>11)&0x1F))
-					: p;
+				dstRow[px] = sSwapRB ? (uint16_t)(((p & 0x1F) << 11) | ((p >> 5 & 0x3F) << 5) | ((p >> 11) & 0x1F)) : p;
 			}
 		}
 	}
@@ -136,8 +154,7 @@ static inline void fill_buf(uint16_t *dst, const uint16_t *rgb565, int w, int h)
 static void
 spi_present(const uint16_t *rgb565, int w, int h)
 {
-	if (sDev == 0 || !sBuf[0] || sW <= 0 || sH <= 0)
-		return;
+	if(sDev == 0 || !sBuf[0] || sW <= 0 || sH <= 0) return;
 
 	// Wait for the SPI thread to finish pushing the previous frame.
 	// On the very first call sSpiDone starts at 1 so this returns immediately.
@@ -160,7 +177,7 @@ spi_present(const uint16_t *rgb565, int w, int h)
 static void
 spi_terminate(void)
 {
-	if (sSpiInited) {
+	if(sSpiInited) {
 		sSpiStop = 1;
 		sem_post(&sSpiWork);
 		sem_wait(&sSpiDone);
@@ -169,13 +186,22 @@ spi_terminate(void)
 		sem_destroy(&sSpiDone);
 		sSpiInited = 0;
 	}
-	if (sDev != 0) { st7789_close(sDev); sDev = 0; }
-	free(sBuf[0]); sBuf[0] = 0;
-	free(sBuf[1]); sBuf[1] = 0;
+	if(sDev != 0) {
+		st7789_close(sDev);
+		sDev = 0;
+	}
+	free(sBuf[0]);
+	sBuf[0] = 0;
+	free(sBuf[1]);
+	sBuf[1] = 0;
 }
 
-static OutputSink sSink = { spi_init, spi_present, spi_terminate, "spi" };
+static OutputSink sSink = {spi_init, spi_present, spi_terminate, "spi"};
 
-OutputSink *OutputSink_Get(void) { return &sSink; }
+OutputSink *
+OutputSink_Get(void)
+{
+	return &sSink;
+}
 
 #endif
