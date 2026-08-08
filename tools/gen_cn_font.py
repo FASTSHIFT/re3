@@ -85,23 +85,27 @@ def build_charmap(glyphs, base):
 
 def render_atlas(glyphs, font_path, cell, cols, px):
     """Render glyphs into a fixed-grid atlas. cell = pixel size of a cell,
-    cols = cells per row, px = font pixel size (<= cell). Returns a PIL Image."""
+    cols = cells per row, px = font pixel size (<= cell). Returns an RGBA image
+    with white glyphs and coverage in the alpha channel, matching how the game's
+    font textures store glyphs (colour is tinted at draw time, alpha is shape)."""
     n = len(glyphs)
     rows = (n + cols - 1) // cols
-    atlas = Image.new("L", (cols * cell, rows * cell), 0)
+    # Render coverage into an L image first, then expand to white+alpha.
+    cov = Image.new("L", (cols * cell, rows * cell), 0)
     font = ImageFont.truetype(font_path, px)
-    draw = ImageDraw.Draw(atlas)
+    draw = ImageDraw.Draw(cov)
     for i, ch in enumerate(glyphs):
         cx = (i % cols) * cell
         cy = (i // cols) * cell
-        # Centre the glyph in its cell using its bounding box.
         bbox = draw.textbbox((0, 0), ch, font=font)
         gw = bbox[2] - bbox[0]
         gh = bbox[3] - bbox[1]
         ox = cx + (cell - gw) // 2 - bbox[0]
         oy = cy + (cell - gh) // 2 - bbox[1]
         draw.text((ox, oy), ch, fill=255, font=font)
-    return atlas, rows
+    white = Image.new("RGBA", cov.size, (255, 255, 255, 0))
+    white.putalpha(cov)
+    return white, rows
 
 
 def to_gxt(entries, charmap):
