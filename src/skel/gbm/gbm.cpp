@@ -65,6 +65,11 @@ long _dwOperatingSystemVersion;
 #include "input_source.h"
 #include "hud_overlay.h"
 
+// librw GL3 draw call counter (defined in gl3render.cpp).
+#ifdef RW_GL3
+namespace rw { namespace gl3 { int gl3_get_and_reset_drawcalls(void); } }
+#endif
+
 #define MAX_SUBSYSTEMS		(16)
 
 rw::EngineOpenParams openParams;
@@ -254,6 +259,7 @@ _psCloseOutput(void)
 // RE3_TIME_PRESENT log. gGpuMs / gCpuMs are filled elsewhere (showRaster /
 // main loop); readback + present are timed here.
 static double gGpuMs = 0.0, gCpuMs = 0.0, gReadMs = 0.0, gPresentMs = 0.0, gFrameMs = 0.0;
+static int    gDrawCalls = 0;
 
 static void
 _psPresent(void)
@@ -291,6 +297,7 @@ _psPresent(void)
 		HudMetrics m = {};	// zero-init: caller only fills timing fields
 		m.frameMs = gFrameMs; m.cpuMs = gCpuMs; m.gpuMs = gGpuMs;
 		m.readMs = gReadMs; m.presentMs = gPresentMs;	// presentMs = last frame's
+		m.drawCalls = gDrawCalls;
 		Hud_Update(&m);
 		Hud_Draw(gReadback565, w, h);
 	}
@@ -303,12 +310,12 @@ _psPresent(void)
 	static int timeOn = -1;
 	if (timeOn < 0) timeOn = getenv("RE3_TIME_PRESENT") ? 1 : 0;
 	if (timeOn) {
-		static double aR=0,aP=0,aG=0,aC=0,aW=0; static int n=0;
-		aR+=gReadMs; aP+=gPresentMs; aG+=gGpuMs; aC+=gCpuMs; aW+=gFrameMs;
+		static double aR=0,aP=0,aG=0,aC=0,aW=0; static int aDC=0,n=0;
+		aR+=gReadMs; aP+=gPresentMs; aG+=gGpuMs; aC+=gCpuMs; aW+=gFrameMs; aDC+=gDrawCalls;
 		if (++n >= 120) {
-			printf("[perf] %dx%d cpu=%.2f gpu=%.2f read=%.2f present=%.2f | frame=%.2fms %.0ffps\n",
-				w, h, aC/n, aG/n, aR/n, aP/n, aW/n, aW>0?1000.0f/(aW/n):0.0f);
-			aR=aP=aG=aC=aW=0; n=0;
+			printf("[perf] %dx%d cpu=%.2f gpu=%.2f read=%.2f present=%.2f dc=%d | frame=%.2fms %.0ffps\n",
+				w, h, aC/n, aG/n, aR/n, aP/n, aDC/n, aW/n, aW>0?1000.0f/(aW/n):0.0f);
+			aR=aP=aG=aC=aW=0; aDC=0; n=0;
 		}
 	}
 }
@@ -325,6 +332,10 @@ psCameraShowRaster(RwCamera *camera)
 	double t0 = psTimer();
 	RwCameraShowRaster(camera, PSGLOBAL(window), rwRASTERFLIPDONTWAIT);
 	gGpuMs = psTimer() - t0;
+	// Snapshot draw call counter after GPU sync; reset for next frame.
+#ifdef RW_GL3
+	gDrawCalls = rw::gl3::gl3_get_and_reset_drawcalls();
+#endif
 
 	_psPresent();
 

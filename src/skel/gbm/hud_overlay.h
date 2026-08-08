@@ -21,6 +21,7 @@ struct HudMetrics {
 	// Clock frequencies (MHz). Filled by the skeleton from sysfs; 0 = unknown.
 	int armMhz;		// ARM CPU core (e.g. 1000)
 	int v3dMhz;		// V3D GPU shader core (e.g. 300)
+	int drawCalls;		// GL draw calls this frame (from librw counter)
 };
 
 // Is the HUD enabled? (checks RE3_HUD once). Cheap to call per frame.
