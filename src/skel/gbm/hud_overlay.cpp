@@ -178,10 +178,6 @@ void Hud_Update(const HudMetrics *m)
 		// Read from sysfs directly.
 		int newArm = read_arm_mhz();
 		int newV3d = read_v3d_mhz();
-		if (newArm != armMhz || newV3d != v3dMhz) {
-			fprintf(stderr, "[hud] freq update: arm=%d->%d  v3d=%d->%d\n",
-			        armMhz, newArm, v3dMhz, newV3d);
-		}
 		armMhz = newArm;
 		v3dMhz = newV3d;
 	}
@@ -193,7 +189,7 @@ void Hud_Update(const HudMetrics *m)
 	sNumLines = 0;
 	snprintf(sLines[sNumLines++], sizeof(sLines[0]), "FPS:%.0f %.1fms", fps, sM.frameMs);
 	snprintf(sLines[sNumLines++], sizeof(sLines[0]), "CPU:%.1f GPU:%.1f", sM.cpuMs, sM.gpuMs);
-	snprintf(sLines[sNumLines++], sizeof(sLines[0]), "CPY:%.1f", sM.readMs + sM.presentMs);
+	snprintf(sLines[sNumLines++], sizeof(sLines[0]), "CPY:%.1f DC:%d", sM.readMs + sM.presentMs, sM.drawCalls);
 	if (cpuPct >= 0)
 		snprintf(sLines[sNumLines++], sizeof(sLines[0]), "SYS:%d%% (4C)", cpuPct);
 	if (armMhz > 0 && v3dMhz > 0)
