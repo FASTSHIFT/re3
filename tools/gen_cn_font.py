@@ -1,27 +1,35 @@
 #!/usr/bin/env python3
-"""gen_cn_font.py - build a Chinese font atlas + GXT for re3 (see docs/11).
+"""gen_cn_font.py - build Chinese font assets for re3's (widened) CJK pipeline.
 
-Given a translation file (INI: [GXT] key = value, values in real Unicode) and a
-TTF/TTC font, this produces everything re3 needs to show Simplified Chinese with
-zero runtime cost, reusing the game's texture-atlas font model:
+re3 reuses the game's Japanese font path for CJK: a big glyph atlas indexed by
+codepoint, full-width layout. This tool produces assets that drop straight into
+the Japanese slots (JAPANESE.GXT + a FONTJAP atlas), with the RE3_CHINESE build
+widening the atlas geometry to 64 cols x 32 rows (see docs/11 and Font.cpp).
 
-  * chinese.gxt        standard GTA3 GXT (TKEY + TDAT wchar16); each CJK glyph is
-                       encoded as its assigned atlas cell index, ASCII stays ASCII
-  * fonts_c.png        the glyph atlas (COLS x rows of fixed cells)
-  * cn_charmap.json    real-char <-> assigned-codepoint map (debug / reuse)
-  * cn_font_widths.inc  optional advance-width table (C array)
+Codepoint / atlas contract (MUST match Font.cpp when RE3_CHINESE):
+  * The print loop subtracts 0x20 from every wchar before indexing, and the
+    CJK draw uses cell = (wchar-0x20), col = cell % COLS, row = cell // COLS.
+  * So a glyph placed in atlas cell i is stored in the GXT as wchar (i + 0x20).
+  * ASCII is placed in cells 0..94 so that wchar == the ASCII code itself
+    (' ' -> cell 0 -> 0x20, 'A' -> cell 33 -> 0x41): ASCII text needs no
+    remapping and renders from the same atlas.
+  * Chinese glyphs occupy cells 95.. (wchar 0x7F..).
+  * Control tokens (~g~ etc.): the '~' is stored as JAP_TERMINATION (0x8000|'~')
+    and the inner letters as plain ASCII, exactly like the stock JAPANESE.GXT.
 
-Codepoint assignment:
-  ASCII (< 0x80) is kept as-is so it renders via the existing western font when
-  the value is small; CJK/other glyphs are assigned sequential indices starting
-  at --base (default 0x0100), which double as atlas cell indices. re3's PrintChar
-  maps cell = c % COLS, row = c / COLS for the Chinese font (mirrors FONTJAP).
+Outputs:
+  * out-gxt  : JAPANESE.GXT (TKEY + TDAT, the codepoint scheme above)
+  * out-png  : FONTJAP atlas (COLS x rows of CELL px, white glyphs, alpha=shape)
+  * out-map  : char <-> cell/codepoint map (debug)
+
+Then pack the PNG with tools/png2txd.py as texture 'FONTJAP' into FONTS_J.TXD.
 
 This is an offline tool; not built by CMake. Requires Pillow.
 """
 import argparse
 import configparser
 import json
+import re
 import struct
 import sys
 
@@ -30,14 +38,15 @@ try:
 except ImportError:
     sys.exit("Pillow required: pip install pillow")
 
+JAP_TERM = 0x8000 | ord('~')  # 0x807E, how the JP GXT stores '~'
+CTRL_RE = re.compile(r"~[A-Za-z0-9_]*~")
+ASCII_CELLS = 95  # cells 0..94 hold ASCII 0x20..0x7E (' '..'~')
+
 
 def load_translation(path):
-    """Load a translation as {key: value} (real Unicode). Accepts either:
-      * the upstream Sergeanur/GXT txt format ([KEY]\\nvalue\\n\\n), or
-      * an INI with a [GXT] section (gxt-utils style).
-    Chosen by extension (.txt -> upstream) with a content sniff fallback."""
-    import re
-    raw = open(path, encoding="utf-8-sig", errors="replace").read()  # strip BOM
+    """Load {key: value} from the upstream Sergeanur/GXT txt format
+    ([KEY]\\nvalue\\n\\n) or an INI [GXT] section. BOM-tolerant."""
+    raw = open(path, encoding="utf-8-sig", errors="replace").read()
     is_txt = path.lower().endswith(".txt") or (
         "[GXT]" not in raw and re.search(r"^\[[^\]]+\]\s*$", raw, re.M))
     if is_txt:
@@ -54,7 +63,6 @@ def load_translation(path):
         if cur is not None:
             entries[cur] = "\n".join(buf).strip()
         return entries
-
     cfg = configparser.ConfigParser(interpolation=None)
     cfg.read(path, encoding="utf-8")
     if "GXT" not in cfg:
@@ -63,7 +71,7 @@ def load_translation(path):
 
 
 def collect_glyphs(entries):
-    """Return sorted list of unique non-ASCII characters used across all values."""
+    """Unique non-ASCII characters actually used across all values, sorted."""
     glyphs = set()
     for v in entries.values():
         for ch in v:
@@ -72,110 +80,146 @@ def collect_glyphs(entries):
     return sorted(glyphs)
 
 
-def build_charmap(glyphs, base):
-    """Assign each non-ASCII glyph a sequential codepoint starting at base.
-    Returns {char: codepoint}. base should clear ASCII (>= 0x100 recommended)."""
-    charmap = {}
-    code = base
-    for ch in glyphs:
-        charmap[ch] = code
-        code += 1
-    return charmap
-
-
-def render_atlas(glyphs, font_path, cell, cols, px):
-    """Render glyphs into a fixed-grid atlas. cell = pixel size of a cell,
-    cols = cells per row, px = font pixel size (<= cell). Returns an RGBA image
-    with white glyphs and coverage in the alpha channel, matching how the game's
-    font textures store glyphs (colour is tinted at draw time, alpha is shape)."""
-    n = len(glyphs)
-    rows = (n + cols - 1) // cols
-    # Render coverage into an L image first, then expand to white+alpha.
-    cov = Image.new("L", (cols * cell, rows * cell), 0)
-    font = ImageFont.truetype(font_path, px)
-    draw = ImageDraw.Draw(cov)
+def build_charmap(glyphs):
+    """Assign each Chinese glyph an atlas cell starting at ASCII_CELLS, and thus
+    a GXT codepoint (cell + 0x20). Returns {char: (cell, codepoint)}."""
+    m = {}
     for i, ch in enumerate(glyphs):
-        cx = (i % cols) * cell
-        cy = (i // cols) * cell
-        bbox = draw.textbbox((0, 0), ch, font=font)
-        gw = bbox[2] - bbox[0]
-        gh = bbox[3] - bbox[1]
-        ox = cx + (cell - gw) // 2 - bbox[0]
-        oy = cy + (cell - gh) // 2 - bbox[1]
-        draw.text((ox, oy), ch, fill=255, font=font)
-    white = Image.new("RGBA", cov.size, (255, 255, 255, 0))
-    white.putalpha(cov)
-    return white, rows
+        cell = ASCII_CELLS + i
+        m[ch] = (cell, cell + 0x20)
+    return m
+
+
+def encode_value(v, charmap):
+    """Encode one string to a list of GXT wchars following the JP scheme."""
+    out = []
+    i = 0
+    while i < len(v):
+        ch = v[i]
+        if ch == '~':
+            # Emit '~' as JAP_TERMINATION; inner letters stay ASCII; closing '~'
+            # also JAP_TERMINATION. Copy through to the matching '~'.
+            out.append(JAP_TERM)
+            i += 1
+            while i < len(v) and v[i] != '~':
+                out.append(ord(v[i]))
+                i += 1
+            if i < len(v):  # closing '~'
+                out.append(JAP_TERM)
+                i += 1
+            continue
+        o = ord(ch)
+        if o < 0x80:
+            out.append(o)               # ASCII passes through (cell o-0x20)
+        else:
+            out.append(charmap[ch][1])  # Chinese -> assigned codepoint
+        i += 1
+    return out
 
 
 def to_gxt(entries, charmap):
-    """Pack entries into a standard GTA3 GXT. ASCII chars use their own code,
-    CJK chars use the assigned codepoint. Returns bytes."""
     all_values = b""
     offsets = {}
     cur = 0
-    # Deterministic order: sort keys like the game's tools do.
-    ordered = sorted(entries.keys(), key=lambda k: k.upper())
+    ordered = list(entries.keys())  # preserve source order
     for key in ordered:
         offsets[key] = cur
-        for ch in entries[key]:
-            code = ord(ch) if ord(ch) < 0x80 else charmap[ch]
+        for code in encode_value(entries[key], charmap):
             all_values += struct.pack("<H", code)
         all_values += b"\x00\x00"
         cur = len(all_values)
-
     tdat = b"TDAT" + struct.pack("<I", len(all_values)) + all_values
 
+    # re3 looks keys up with a BinarySearch using strcmp, so the TKEY entries
+    # MUST be sorted by the (uppercased, NUL-truncated) key. TDAT order is
+    # irrelevant since entries carry explicit offsets.
+    def key8(k):
+        return k.upper().encode("ascii")[:8]
     all_keys = b""
-    for key in ordered:
-        k = key.upper().encode("ascii")[:8]
-        all_keys += struct.pack("<I8s", offsets[key], k)
+    for key in sorted(ordered, key=lambda k: key8(k)):
+        all_keys += struct.pack("<I8s", offsets[key], key8(key))
     tkey = b"TKEY" + struct.pack("<I", len(ordered) * 12) + all_keys
-
     return tkey + tdat
 
 
+def render_atlas(glyphs, charmap, font_path, cell, cols, rows, px, ascii_font_path, ascii_px):
+    """Render ASCII (cells 0..94) then Chinese (95..) into a fixed grid. White
+    glyphs with coverage in alpha. Height = rows*cell (must match CJK_ROWS_UV)."""
+    W, H = cols * cell, rows * cell
+    cov = Image.new("L", (W, H), 0)
+    draw = ImageDraw.Draw(cov)
+    cn_font = ImageFont.truetype(font_path, px)
+    ascii_font = ImageFont.truetype(ascii_font_path or font_path, ascii_px)
+
+    def put(cellidx, ch, font):
+        cx = (cellidx % cols) * cell
+        cy = (cellidx // cols) * cell
+        bbox = draw.textbbox((0, 0), ch, font=font)
+        gw, gh = bbox[2] - bbox[0], bbox[3] - bbox[1]
+        ox = cx + (cell - gw) // 2 - bbox[0]
+        oy = cy + (cell - gh) // 2 - bbox[1]
+        draw.text((ox, oy), ch, fill=255, font=font)
+
+    # ASCII 0x20..0x7E into cells 0..94.
+    for code in range(0x20, 0x7F):
+        put(code - 0x20, chr(code), ascii_font)
+    # Chinese glyphs.
+    for ch, (cellidx, _code) in charmap.items():
+        put(cellidx, ch, cn_font)
+
+    # White glyph, coverage in the ALPHA channel. png2txd.py packs this into a
+    # PAL8 texture whose palette ramps alpha with the index (matching the stock
+    # FONTJAP), so after librw unpalettizes it on GL3 the font shader blends
+    # alpha = coverage. (RGB stays white; the vertex colour tints the glyph.)
+    white = Image.new("RGBA", (W, H), (255, 255, 255, 0))
+    white.putalpha(cov)
+    return white
+
+
 def main():
-    ap = argparse.ArgumentParser(description="Build re3 Chinese font atlas + GXT")
-    ap.add_argument("translation", help="INI translation ([GXT] key=value, Unicode)")
-    ap.add_argument("--font", default="/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
-                    help="TTF/TTC font path")
-    ap.add_argument("--out-gxt", default="chinese.gxt")
-    ap.add_argument("--out-png", default="fonts_c.png")
+    ap = argparse.ArgumentParser(description=__doc__)
+    ap.add_argument("translation", help="chinese.txt (upstream fmt) or INI")
+    ap.add_argument("--font", default="spike/zpix.ttf", help="CJK TTF/TTC")
+    ap.add_argument("--ascii-font", default="", help="ASCII TTF (default: --font)")
+    ap.add_argument("--out-gxt", default="JAPANESE.GXT")
+    ap.add_argument("--out-png", default="FONTJAP.png")
     ap.add_argument("--out-map", default="cn_charmap.json")
-    ap.add_argument("--base", type=lambda x: int(x, 0), default=0x0100,
-                    help="first assigned codepoint (default 0x100)")
-    ap.add_argument("--cell", type=int, default=32, help="atlas cell size in px")
-    ap.add_argument("--px", type=int, default=28, help="glyph render size in px")
-    ap.add_argument("--cols", type=int, default=64, help="atlas columns")
+    ap.add_argument("--cols", type=int, default=64, help="atlas columns (match CJK_COLS)")
+    ap.add_argument("--rows", type=int, default=32, help="atlas rows (match CJK_ROWS_UV)")
+    ap.add_argument("--cell", type=int, default=16, help="cell px (texW/cols)")
+    ap.add_argument("--px", type=int, default=12, help="CJK glyph render px")
+    ap.add_argument("--ascii-px", type=int, default=12, help="ASCII glyph render px")
     args = ap.parse_args()
 
     entries = load_translation(args.translation)
     glyphs = collect_glyphs(entries)
-    print("entries: %d, unique CJK glyphs: %d" % (len(entries), len(glyphs)))
-    if not glyphs:
-        print("warning: no non-ASCII glyphs found; is the translation Unicode?")
+    charmap = build_charmap(glyphs)
+    cap = args.cols * args.rows
+    used = ASCII_CELLS + len(glyphs)
+    print("entries: %d, CJK glyphs: %d, cells used: %d / %d"
+          % (len(entries), len(glyphs), used, cap))
+    if used > cap:
+        sys.exit("atlas too small: need %d cells, have %d (raise --cols/--rows)"
+                 % (used, cap))
+    top_code = (ASCII_CELLS + len(glyphs) - 1) + 0x20 if glyphs else 0x7E
+    if top_code >= 0x8000:
+        sys.exit("codepoint 0x%X collides with JAP_TERMINATION range" % top_code)
 
-    charmap = build_charmap(glyphs, args.base)
-    top = args.base + len(glyphs) - 1 if glyphs else args.base
-    if top > 0xFFFF:
-        sys.exit("too many glyphs: assigned codepoint 0x%X exceeds 16-bit" % top)
-
-    atlas, rows = render_atlas(glyphs, args.font, args.cell, args.cols, args.px)
+    atlas = render_atlas(glyphs, charmap, args.font, args.cell, args.cols,
+                         args.rows, args.px, args.ascii_font, args.ascii_px)
     atlas.save(args.out_png)
-    print("atlas: %dx%d px, %d cols x %d rows, saved %s"
-          % (atlas.width, atlas.height, args.cols, rows, args.out_png))
+    print("atlas: %dx%d, %d cols x %d rows -> %s"
+          % (atlas.width, atlas.height, args.cols, args.rows, args.out_png))
 
     gxt = to_gxt(entries, charmap)
-    with open(args.out_gxt, "wb") as f:
-        f.write(gxt)
-    print("gxt: %d bytes, saved %s" % (len(gxt), args.out_gxt))
+    open(args.out_gxt, "wb").write(gxt)
+    print("gxt: %d bytes -> %s" % (len(gxt), args.out_gxt))
 
-    with open(args.out_map, "w", encoding="utf-8") as f:
-        json.dump({"base": args.base, "cols": args.cols, "cell": args.cell,
-                   "map": {ch: code for ch, code in charmap.items()}},
-                  f, ensure_ascii=False, indent=1)
-    print("charmap: saved %s" % args.out_map)
+    json.dump({"cols": args.cols, "rows": args.rows, "cell": args.cell,
+               "ascii_cells": ASCII_CELLS,
+               "map": {ch: {"cell": c, "code": code} for ch, (c, code) in charmap.items()}},
+              open(args.out_map, "w", encoding="utf-8"), ensure_ascii=False, indent=1)
+    print("charmap -> %s" % args.out_map)
 
 
 if __name__ == "__main__":

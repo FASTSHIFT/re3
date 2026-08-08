@@ -41,6 +41,7 @@ ID_TEXDICTIONARY = 0x0016
 
 PLATFORM_D3D8 = 8
 FMT_C8888 = 0x0500
+FMT_PAL8 = 0x2000 | FMT_C8888  # 0x2500: 8-bit palettized, 32-bit palette entries
 TYPE_TEXTURE = 0x04
 FILTER_LINEAR = 2  # Texture::LINEAR
 ADDR_WRAP = 1      # Texture::WRAP
@@ -50,31 +51,72 @@ def chunk(cid, body):
     return struct.pack("<III", cid, len(body), RW_VERSION) + body
 
 
-def texture_native(name, img):
-    """Build a TEXTURENATIVE chunk for a PIL image as C8888 (BGRA)."""
+def read_chunk_header(d, o):
+    cid, sz, ver = struct.unpack("<III", d[o:o + 12])
+    return cid, sz, ver, o + 12
+
+
+def split_base_textures(path):
+    """Return a list of (name, raw_texturenative_chunk_bytes) from an existing
+    TXD, so we can carry stock textures (font1/font2) through verbatim."""
+    d = open(path, "rb").read()
+    _c, _s, _v, o = read_chunk_header(d, 0)          # TEXDICTIONARY
+    _c, s, _v, o2 = read_chunk_header(d, o)          # dict STRUCT
+    numtex = struct.unpack("<h", d[o2:o2 + 2])[0]
+    o = o2 + s
+    out = []
+    for _ in range(numtex):
+        start = o
+        c, s, _v, body = read_chunk_header(d, o)     # TEXTURENATIVE
+        assert c == ID_TEXTURENATIVE
+        end = body + s
+        # name is inside STRUCT: platform(4)+filter(4)+name(32)
+        _c2, _s2, _v2, st = read_chunk_header(d, body)
+        name = d[st + 8:st + 8 + 32].split(b"\x00")[0].decode("ascii")
+        out.append((name, d[start:end]))
+        o = end
+    return out
+
+
+def texture_native(name, img, mask=""):
+    """Build a TEXTURENATIVE chunk as an 8-bit PALETTIZED D3D8 texture
+    (fmt 0x2500), matching the stock GTA3 font textures.
+
+    Why PAL8 and not direct C8888: on a GL3 build librw's d3d8 reader only
+    converts PAL4/PAL8 textures into a current-platform (GL3) raster via
+    readAsImage(); a direct C8888 D3D8 texture stays an unusable D3D8 raster and
+    renders as solid blocks. The stock fonts are PAL8, so we match them.
+
+    Glyph encoding (also matching stock): the alpha channel of the image holds
+    the glyph coverage, RGB is white. We emit a 256-entry palette
+    palette[i] = (255,255,255, i) and set each pixel's index = its alpha byte,
+    so after unpalettization alpha = coverage and the font shader blends it."""
     img = img.convert("RGBA")
     w, h = img.size
-    # BGRA byte order (D3DFMT_A8R8G8B8 little-endian).
-    px = img.tobytes()  # RGBA
-    bgra = bytearray(len(px))
-    bgra[0::4] = px[2::4]  # B
-    bgra[1::4] = px[1::4]  # G
-    bgra[2::4] = px[0::4]  # R
-    bgra[3::4] = px[3::4]  # A
-    data = bytes(bgra)
+    alpha = img.split()[3].tobytes()  # coverage per pixel -> palette index
+
+    # Palette: 256 entries of white with ramped alpha, BGRA byte order.
+    pal = bytearray(256 * 4)
+    for i in range(256):
+        pal[i * 4 + 0] = 255  # B
+        pal[i * 4 + 1] = 255  # G
+        pal[i * 4 + 2] = 255  # R
+        pal[i * 4 + 3] = i    # A = coverage
+    data = alpha  # index image (1 byte/pixel) == coverage
 
     name_b = name.encode("ascii")[:31].ljust(32, b"\x00")
-    mask_b = b"\x00" * 32
+    mask_b = mask.encode("ascii")[:31].ljust(32, b"\x00")
     filter_addr = FILTER_LINEAR | (ADDR_WRAP << 8) | (ADDR_WRAP << 12)
 
     struct_body = struct.pack("<I", PLATFORM_D3D8)
     struct_body += struct.pack("<I", filter_addr)
     struct_body += name_b + mask_b
-    struct_body += struct.pack("<I", FMT_C8888)
+    struct_body += struct.pack("<I", FMT_PAL8)
     struct_body += struct.pack("<i", 1)          # hasAlpha
     struct_body += struct.pack("<HH", w, h)
-    struct_body += struct.pack("<BBBB", 32, 1, TYPE_TEXTURE, 0)  # depth,levels,type,compression
-    struct_body += struct.pack("<I", len(data)) + data           # level 0
+    struct_body += struct.pack("<BBBB", 8, 1, TYPE_TEXTURE, 0)  # depth,levels,type,compression
+    struct_body += bytes(pal)                     # 256*4 palette
+    struct_body += struct.pack("<I", len(data)) + data          # level 0 indices
 
     body = chunk(ID_STRUCT, struct_body)
     body += chunk(ID_EXTENSION, b"")  # empty texture extension
@@ -82,31 +124,51 @@ def texture_native(name, img):
 
 
 def main():
-    if len(sys.argv) < 3:
-        sys.exit("usage: png2txd.py out.txd [name=]img.png ...")
-    out = sys.argv[1]
-    specs = sys.argv[2:]
+    import argparse
+    ap = argparse.ArgumentParser(description="Pack PNG(s) into a D3D8 PAL8 TXD")
+    ap.add_argument("out", help="output .txd")
+    ap.add_argument("specs", nargs="+", help="[name=]img.png (name defaults to file stem)")
+    ap.add_argument("--base-txd", default="",
+                    help="carry all textures from this TXD verbatim, replacing "
+                         "any whose name matches one we generate (e.g. keep the "
+                         "stock font1/font2, replace FONTJAP)")
+    ap.add_argument("--mask", default="",
+                    help="mask name to set on generated textures (e.g. FONTJAP_mask)")
+    args = ap.parse_args()
 
-    textures = []
-    for s in specs:
+    gen = []
+    for s in args.specs:
         if "=" in s:
             name, path = s.split("=", 1)
         else:
             path = s
             name = path.rsplit("/", 1)[-1].rsplit(".", 1)[0]
-        textures.append((name, Image.open(path)))
+        gen.append((name, Image.open(path)))
+    gen_names = {n.lower() for n, _ in gen}
 
-    struct_body = struct.pack("<hh", len(textures), 1)  # numTex, deviceId=d3d8
+    chunks = []  # (name, raw_chunk_bytes)
+    if args.base_txd:
+        for name, raw in split_base_textures(args.base_txd):
+            if name.lower() in gen_names:  # RW texture names are case-insensitive
+                print("  (replacing base texture '%s')" % name)
+                continue
+            chunks.append((name, raw))
+            print("  = carried base texture '%s'" % name)
+    for name, img in gen:
+        chunks.append((name, texture_native(name, img, args.mask)))
+        print("  + texture '%s' %dx%d%s"
+              % (name, img.width, img.height, " mask=" + args.mask if args.mask else ""))
+
+    struct_body = struct.pack("<hh", len(chunks), 0)  # numTex, deviceId (0=unknown, matches stock)
     body = chunk(ID_STRUCT, struct_body)
-    for name, img in textures:
-        body += texture_native(name, img)
-        print("  + texture '%s' %dx%d" % (name, img.width, img.height))
+    for _name, raw in chunks:
+        body += raw
     body += chunk(ID_EXTENSION, b"")  # empty dictionary extension
     txd = chunk(ID_TEXDICTIONARY, body)
 
-    with open(out, "wb") as f:
+    with open(args.out, "wb") as f:
         f.write(txd)
-    print("wrote %s (%d bytes, %d textures)" % (out, len(txd), len(textures)))
+    print("wrote %s (%d bytes, %d textures)" % (args.out, len(txd), len(chunks)))
 
 
 if __name__ == "__main__":
