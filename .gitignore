@@ -378,3 +378,13 @@ gta3_assets.tar.zst
 gamedir/
 # Local convenience symlink to reference project (ST7789 SPI)
 ref_lv_gba_emu
+# Scratch/spike area (experiments, downloaded fonts, cloned repos, translation
+# batches, generated GXT/atlas). Not part of the tree.
+spike/
+# Secrets and local API test scripts (never commit keys)
+apikey.txt
+hello_doubao.py
+# Generated localization artifacts (produced by tools/gen_cn_font.py)
+CHINESE.GXT
+fonts_c.png
+cn_charmap.json
