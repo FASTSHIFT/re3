@@ -9,6 +9,7 @@
 
 #include <stdio.h>
 #include <stdlib.h>
+#include <time.h>
 
 #include "common.h"
 #include "Pad.h"
@@ -57,6 +58,26 @@ static GpioKey sKeys[GK_COUNT] = {
     {"RE3_KEY_R", 6}        // R shoulder -> LeftShoulder1 (aim/target)
 };
 static bool sReady = false;
+
+// Monotonic millisecond clock. uint32 wraps every ~49.7 days, but we only ever
+// take differences of nearby timestamps and unsigned subtraction is wrap-safe,
+// so ms resolution in 32 bits is plenty here.
+static uint32
+mono_ms(void)
+{
+	struct timespec ts;
+	clock_gettime(CLOCK_MONOTONIC, &ts);
+	return (uint32)(ts.tv_sec * 1000u + ts.tv_nsec / 1000000u);
+}
+
+// R-shoulder double-tap tracking (on foot): hold = aim, double-tap = cycle
+// weapon. A double tap is two short presses in quick succession.
+#define R_TAP_MAX_MS 250u  // a press shorter than this counts as a "tap"
+#define R_DTAP_GAP_MS 300u // max gap between the two taps' presses
+static int sRWasDown = 0;
+static int sRHaveTap = 0;      // a qualifying first tap is pending
+static uint32 sRDownAt = 0;    // when R was last pressed
+static uint32 sRLastTapAt = 0; // when the previous qualifying tap was pressed
 
 // ---- init -----------------------------------------------------------------
 static void
@@ -135,9 +156,39 @@ gpio_capturePad(int padID)
 	}
 
 	// --- Shoulders ---
-	// L = fire/shoot (Circle), R = aim/target (LeftShoulder1)
+	// L = fire/shoot (Circle).
 	if(p(GK_L)) s.Circle = 255;
-	if(p(GK_R)) s.LeftShoulder1 = 255;
+
+	// R shoulder:
+	//   in a vehicle -> aim/target (LeftShoulder1), as before.
+	//   on foot      -> HOLD aims (LeftShoulder1, no delay); a DOUBLE-TAP
+	//                   cycles to the next weapon (RightShoulder2 for one
+	//                   frame). Aiming is never delayed; the two brief taps of
+	//                   a double-tap just also register a frame of aim, which
+	//                   is imperceptible.
+	bool rNow = p(GK_R);
+	if(!onFoot) {
+		if(rNow) s.LeftShoulder1 = 255;
+	} else {
+		if(rNow && !sRWasDown) {
+			// press edge: is this the 2nd tap of a double-tap?
+			uint32 now = mono_ms();
+			if(sRHaveTap && (uint32)(now - sRLastTapAt) <= R_DTAP_GAP_MS) {
+				s.RightShoulder2 = 255; // cycle weapon (one frame)
+				sRHaveTap = 0;          // consume, don't triple-trigger
+			}
+			sRDownAt = now;
+		}
+		if(!rNow && sRWasDown) {
+			// release edge: a short press qualifies as a tap for next time.
+			if((uint32)(mono_ms() - sRDownAt) <= R_TAP_MAX_MS) {
+				sRLastTapAt = sRDownAt;
+				sRHaveTap = 1;
+			}
+		}
+		if(rNow) s.LeftShoulder1 = 255; // hold = aim (immediate)
+	}
+	sRWasDown = rNow ? 1 : 0;
 
 	// --- SELECT = Triangle (enter/exit vehicle, interact) ---
 	if(p(GK_SELECT)) s.Triangle = 255;
