@@ -123,6 +123,7 @@ if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU" OR CMAKE_CXX_COMPILER_ID STREQUAL "Clang
     # should still be warning-clean under the strict set (turn this ON locally).
     option(${PROJECT}_STRICT_WARNINGS "Treat all warnings strictly (no upstream suppressions)" ON)
     if(NOT ${PROJECT}_STRICT_WARNINGS)
+        # Language-agnostic suppressions (valid for both C and C++).
         target_compile_options(${EXECUTABLE}
             PRIVATE
                 -Wno-pedantic
@@ -130,9 +131,6 @@ if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU" OR CMAKE_CXX_COMPILER_ID STREQUAL "Clang
                 -Wno-sign-compare
                 -Wno-double-promotion
                 -Wno-missing-field-initializers
-                -Wno-deprecated-copy
-                -Wno-reorder
-                -Wno-class-memaccess
                 -Wno-strict-aliasing
                 -Wno-maybe-uninitialized
                 -Wno-implicit-fallthrough
@@ -150,13 +148,20 @@ if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU" OR CMAKE_CXX_COMPILER_ID STREQUAL "Clang
                 -Wno-misleading-indentation
                 -Wno-format-overflow
                 -Wno-multichar
-                -Wno-invalid-offsetof
                 -Wno-type-limits
                 -Wno-restrict
                 -Wno-format
                 -Wno-cast-function-type
                 -Wno-unused-value
                 -Wno-unused-function
+        )
+        # C++-only suppressions (these flags warn "not valid for C" otherwise).
+        target_compile_options(${EXECUTABLE}
+            PRIVATE
+                $<$<COMPILE_LANGUAGE:CXX>:-Wno-deprecated-copy>
+                $<$<COMPILE_LANGUAGE:CXX>:-Wno-reorder>
+                $<$<COMPILE_LANGUAGE:CXX>:-Wno-class-memaccess>
+                $<$<COMPILE_LANGUAGE:CXX>:-Wno-invalid-offsetof>
         )
     endif()
 elseif(CMAKE_CXX_COMPILER_ID STREQUAL "MSVC")
