@@ -1,5 +1,12 @@
 cmake_minimum_required(VERSION 3.14)
 
+# Honor CMAKE_INTERPROCEDURAL_OPTIMIZATION on all targets, including the
+# vendored librw subproject, so RE3_LTO actually covers the renderer.
+if(POLICY CMP0069)
+    cmake_policy(SET CMP0069 NEW)
+    set(CMAKE_POLICY_DEFAULT_CMP0069 NEW)
+endif()
+
 set(EXECUTABLE re3)
 set(PROJECT RE3)
 
@@ -35,6 +42,59 @@ option(${PROJECT}_WITH_LIBSNDFILE "Build ${EXECUTABLE} with libsndfile (instead 
 # Raspberry Pi (VideoCore IV) target: prefer hardware GLES2 context over software desktop GL.
 # Without this, XWayland/llvmpipe hands librw a software GL 2.1 context first.
 option(${PROJECT}_RPI "Optimize for Raspberry Pi (VideoCore IV / GLES2)" OFF)
+
+# --- Performance build options. Default ON for the Pi (RE3_RPI) so the
+# Release cross build ships optimized; OFF elsewhere so desktop/CI are
+# unchanged. Only take effect in non-Debug builds. See docs/14. ---
+#
+# Link-time optimization: lets GCC inline and prune across translation units
+# and the vendored static librw (the main win here). Routes ar/ranlib/nm
+# through the gcc- wrappers so LTO sections in static archives survive (works
+# with the arm cross toolchain too).
+option(${PROJECT}_LTO "Enable link-time optimization (-flto=auto) for non-Debug builds" ${${PROJECT}_RPI})
+
+# Extra speed-oriented flags borrowed from the lv_gba_emu Pi build, filtered to
+# ones that help runtime speed (NOT the size-first ones like -falign-*=1 /
+# -fno-unroll-loops / -fwhole-program, which would hurt speed or break linking
+# against librw/SDL/OpenAL):
+#   -fno-math-errno                 : don't set errno from libm calls
+#   -ffunction-sections/-fdata-sections + --gc-sections : drop dead code, helps I-cache
+#   -fno-stack-protector -fno-ident : shave a little overhead
+option(${PROJECT}_EXTRA_OPT "Add speed-oriented compile flags for non-Debug builds" ${${PROJECT}_RPI})
+
+if(NOT CMAKE_BUILD_TYPE STREQUAL "Debug")
+    if(${PROJECT}_LTO)
+        include(CheckIPOSupported)
+        check_ipo_supported(RESULT _ipo_ok OUTPUT _ipo_msg)
+        if(_ipo_ok)
+            set(CMAKE_INTERPROCEDURAL_OPTIMIZATION ON)
+            # For GCC, route ar/ranlib/nm through the -gcc- wrappers so LTO
+            # sections in static libraries (e.g. vendored librw.a) survive.
+            if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+                get_filename_component(_cc_dir "${CMAKE_CXX_COMPILER}" DIRECTORY)
+                get_filename_component(_cc_name "${CMAKE_CXX_COMPILER}" NAME)
+                string(REPLACE "g++" "gcc" _cc_prefix "${_cc_name}")
+                foreach(_tool ar ranlib nm)
+                    string(TOUPPER ${_tool} _TOOL)
+                    find_program(_gcc_${_tool} "${_cc_prefix}-${_tool}" HINTS "${_cc_dir}")
+                    if(_gcc_${_tool})
+                        set(CMAKE_${_TOOL} "${_gcc_${_tool}}" CACHE FILEPATH "" FORCE)
+                    endif()
+                endforeach()
+            endif()
+            message(STATUS "${PROJECT}_LTO enabled: -flto=auto (IPO)")
+        else()
+            message(WARNING "${PROJECT}_LTO requested but IPO unsupported: ${_ipo_msg}")
+        endif()
+    endif()
+
+    if(${PROJECT}_EXTRA_OPT)
+        add_compile_options(-fno-math-errno -ffunction-sections -fdata-sections
+                            -fno-stack-protector -fno-ident)
+        add_link_options(-Wl,--gc-sections)
+        message(STATUS "${PROJECT}_EXTRA_OPT enabled: speed-oriented flags + --gc-sections")
+    endif()
+endif()
 
 set_property(CACHE ${PROJECT}_AUDIO PROPERTY STRINGS ${${PROJECT}_AUDIOS})
 message(STATUS "${PROJECT}_AUDIO = ${${PROJECT}_AUDIO} (choices=${${PROJECT}_AUDIOS})")
