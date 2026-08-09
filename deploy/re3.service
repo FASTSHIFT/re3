@@ -1,0 +1,37 @@
+[Unit]
+Description=GTA3 re3 (GamePi20 SPI headless)
+# Order after the user session so PipeWire (per-user) is up before re3, so
+# OpenAL can connect to it and route audio to the current default sink
+# (e.g. a DualSense). Requires `loginctl enable-linger pi` so the user
+# session + /run/user/1000 exist at boot without an interactive login.
+After=network.target sound.target user@1000.service
+Wants=user@1000.service
+Wants=sound.target
+
+[Service]
+Type=simple
+User=pi
+WorkingDirectory=/home/pi/GTA3
+Environment="RE3_HUD=1"
+# Point OpenAL/PipeWire at the pi user's runtime dir. Without this a system
+# service has no session bus/runtime dir and OpenAL's PipeWire backend fails
+# to connect (observed: "Failed to connect PipeWire event context, errno 112"),
+# so audio never follows the PipeWire default sink (no sound on the pad).
+Environment="XDG_RUNTIME_DIR=/run/user/1000"
+
+# Set audio volume before launch. Card 0 is the bcm2835 headphones/PWM out on
+# GamePi20 (BCM18); the leading '-' makes a failure non-fatal so the game still
+# starts if the mixer control is absent.
+ExecStartPre=-/usr/bin/amixer -c 0 sset PCM 80%
+ExecStart=/home/pi/GTA3/re3
+
+# Log to a file for diagnostics.
+StandardOutput=append:/home/pi/re3spi.log
+StandardError=append:/home/pi/re3spi.log
+
+# Restart automatically if the game crashes (but not if it exits cleanly).
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target
