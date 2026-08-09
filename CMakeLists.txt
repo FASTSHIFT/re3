@@ -82,7 +82,15 @@ if(NOT CMAKE_BUILD_TYPE STREQUAL "Debug")
                     endif()
                 endforeach()
             endif()
-            message(STATUS "${PROJECT}_LTO enabled: -flto=auto (IPO)")
+            # re3 is reverse-engineered code full of type punning / aliasing
+            # violations (upstream only silences the warning: -Wno-strict-
+            # aliasing). Plain -O3 usually gets away with it, but LTO's
+            # cross-module optimization aggressively exploits the strict-
+            # aliasing assumption and turns those violations into real
+            # miscompiles (observed: cutscene character heads vanishing).
+            # Disable the assumption globally; the runtime cost is negligible.
+            add_compile_options(-fno-strict-aliasing)
+            message(STATUS "${PROJECT}_LTO enabled: -flto=auto (IPO) + -fno-strict-aliasing")
         else()
             message(WARNING "${PROJECT}_LTO requested but IPO unsupported: ${_ipo_msg}")
         endif()
