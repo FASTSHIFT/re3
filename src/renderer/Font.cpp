@@ -1659,18 +1659,6 @@ CFont::SetPropOff(void)
 void
 CFont::SetFontStyle(int16 style)
 {
-#ifdef MORE_LANGUAGES
-	// CJK languages (Japanese, and our Chinese reusing that pipeline) render
-	// through the big CJK atlas as FONT_JAPANESE. Upstream relied on callers
-	// wrapping the style in FONT_LOCALE() by hand, which it forgot in several
-	// HUD spots (vehicle/zone names, mission reward/BigMessage) - those show
-	// garbage because latin styles index the latin font with CJK codepoints.
-	// Redirect the latin text styles here so every caller is covered, matching
-	// what FONT_LOCALE() does. FONT_PAGER already has its own CJK handling in
-	// IsJapaneseFont(), so leave it (and FONT_JAPANESE) alone.
-	if(IsJapanese() && (style == FONT_BANK || style == FONT_HEADING))
-		style = FONT_JAPANESE;
-#endif
 	Details.style = style;
 }
 
