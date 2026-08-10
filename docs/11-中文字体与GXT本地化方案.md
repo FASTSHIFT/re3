@@ -236,3 +236,38 @@ CJK 绘制分支对 **ASCII 字母和汉字一视同仁，全部按“全宽方�
 - 可考虑改用 re3 扩展版 `gamefiles/TEXT/american.gxt`（2699 键）做一次干净的全量
   重跑，替代当前 batch_099 补丁式流程。
 - 核实 `spike/patch_fontjap.py` 临时脚本是否还需要。
+
+## 最终方案：按调用点内容精准包 FONT_LOCALE（2026-08）
+
+放弃了「SetFontStyle 内部一刀切重定向」和「per-character fallback」两种改渲染核心
+的思路（都太重、副作用大，已 revert）。回到最朴素、也最符合 re3 原设计的做法：
+
+> **纯 ASCII/数字的地方不用 CJK 字体，需要本地化的文本才包 `FONT_LOCALE`。**
+
+这是**内容分类问题，不是渲染问题**：每个 `SetFontStyle` 调用点其实都知道自己画的
+是什么。上游 re3 本就是这么做的（菜单里几乎全包了 `FONT_LOCALE`），只是 HUD 有
+几处**该本地化却漏包**，另有几处**画数字却误包**。
+
+### A. 漏包 → 补 FONT_LOCALE（显示中文翻译文本，Hud.cpp）
+- 区域名 `m_ZoneToPrint`（裸 FONT_BANK）
+- 车名 `m_pVehicleNameToPrint`（裸 FONT_BANK）
+- 任务奖励 / mission passed 大字 BigMessage[0]（裸 FONT_HEADING）
+- wasted/busted 大字 BigMessage[2]（裸 FONT_HEADING）
+- BigMessage[1]（裸 FONT_HEADING）
+
+### B. 不动（纯 ASCII 数字/图标，保持裸样式才正确）
+- 钱数 `$%08d`、弹药 `%d-%d`、血量/护甲/通缉星数字（裸 FONT_HEADING/BANK）
+- 电台名等纯英文
+
+### C. 字幕 CJK 缩放
+字幕 `SetScale(0.48, 1.12)` 是为拉丁窄字模调的，套到方形 CJK 会水平压扁。对 CJK
+语言改用近方形 `SetScale(0.85, 1.0)`，拉丁语言保持原值。
+
+### D. 上游误包 FONT_LOCALE（画数字却包，待修）
+- 屏幕计时器 timer 数字 `m_bTimerBuffer`（Hud.cpp）
+- 屏幕计数器 counter 数字 `m_bCounterBuffer`（COUNTER_DISPLAY_NUMBER 分支）
+
+这两处画的是纯数字，却用了 `FONT_LOCALE(FONT_HEADING)`，CJK 下会被当全宽方格 →
+数字变形/错位。注意 timer 的**文字标签**（`m_aTimerText`）复用了同一次 style 设置，
+是本地化文本，需要保留 CJK。故修法是**拆分**：数字用裸 `FONT_HEADING`，标签单独
+`FONT_LOCALE(FONT_HEADING)`。

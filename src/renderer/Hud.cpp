@@ -758,7 +758,9 @@ void CHud::Draw()
 					CFont::SetRightJustifyOn();
 					CFont::SetRightJustifyWrap(0.0f);
 					CFont::SetBackGroundOnlyTextOff();
-					CFont::SetFontStyle(FONT_BANK);
+					// Zone name is localized text -> FONT_LOCALE so CJK renders
+					// via the CJK atlas (upstream forgot the wrapper here).
+					CFont::SetFontStyle(FONT_LOCALE(FONT_BANK));
 					CFont::SetColor(CRGBA(0, 0, 0, fZoneAlpha));
 					CFont::PrintString(SCREEN_SCALE_FROM_RIGHT(32.0f) + SCREEN_SCALE_X_FIX(1.0f), SCREEN_SCALE_FROM_BOTTOM(ZONE_Y) + SCREEN_SCALE_Y_FIX(1.0f), m_ZoneToPrint);
 					CFont::SetColor(CRGBA(ZONE_COLOR.r, ZONE_COLOR.g, ZONE_COLOR.b, fZoneAlpha));
@@ -852,7 +854,8 @@ void CHud::Draw()
 					CFont::SetRightJustifyOn();
 					CFont::SetRightJustifyWrap(0.0f);
 					CFont::SetBackGroundOnlyTextOff();
-					CFont::SetFontStyle(FONT_BANK);
+					// Vehicle name is localized text -> FONT_LOCALE for CJK.
+					CFont::SetFontStyle(FONT_LOCALE(FONT_BANK));
 					CFont::SetColor(CRGBA(0, 0, 0, fVehicleAlpha));
 					CFont::PrintString(SCREEN_SCALE_FROM_RIGHT(32.0f) + SCREEN_SCALE_X_FIX(1.0f), SCREEN_SCALE_FROM_BOTTOM(VEHICLE_Y) + SCREEN_SCALE_Y_FIX(1.0f), m_pVehicleNameToPrint);
 					CFont::SetColor(CRGBA(VEHICLE_COLOR.r, VEHICLE_COLOR.g, VEHICLE_COLOR.b, fVehicleAlpha));
@@ -1181,7 +1184,16 @@ void CHud::Draw()
 			CFont::SetJustifyOff();
 			CFont::SetBackgroundOff();
 			CFont::SetBackgroundColor(CRGBA(0, 0, 0, 128));
-			CFont::SetScale(SCREEN_SCALE_X_PC(0.48f), SCREEN_SCALE_Y_PC(1.12f));
+#ifdef MORE_LANGUAGES
+			// The stock subtitle scale (0.48 x 1.12) is tuned for the narrow
+			// latin glyphs; applied to square CJK glyphs (drawn as CJK_DRAWW x
+			// CJK_DRAWH * scale) it squashes them horizontally. Use a near-square
+			// scale for CJK so the glyphs keep their aspect ratio.
+			if (CFont::IsJapanese())
+				CFont::SetScale(SCREEN_SCALE_X_PC(0.85f), SCREEN_SCALE_Y_PC(1.0f));
+			else
+#endif
+				CFont::SetScale(SCREEN_SCALE_X_PC(0.48f), SCREEN_SCALE_Y_PC(1.12f));
 			CFont::SetCentreOn();
 			CFont::SetPropOn();
 			CFont::SetFontStyle(FONT_LOCALE(FONT_BANK));
@@ -1230,7 +1242,8 @@ void CHud::Draw()
 				CFont::SetCentreOn();
 				CFont::SetCentreSize(SCREEN_SCALE_X(DEFAULT_SCREEN_WIDTH - 25));
 				CFont::SetColor(CRGBA(255, 255, 0, 255));
-				CFont::SetFontStyle(FONT_HEADING);
+				// Big mission title (localized) -> FONT_LOCALE for CJK.
+				CFont::SetFontStyle(FONT_LOCALE(FONT_HEADING));
 
 				// Appearently sliding text in here was abandoned very early, since this text is centered now.
 #ifdef FIX_BUGS
@@ -1299,7 +1312,8 @@ void CHud::Draw()
 
 				CFont::SetPropOn();
 				CFont::SetRightJustifyOn();
-				CFont::SetFontStyle(FONT_HEADING);
+				// Wasted/busted text (localized) -> FONT_LOCALE for CJK.
+				CFont::SetFontStyle(FONT_LOCALE(FONT_HEADING));
 
 				CFont::SetColor(CRGBA(0, 0, 0, BigMessageAlpha[2]*0.75f));
 				CFont::PrintString(SCREEN_SCALE_FROM_RIGHT(20.0f) + SCREEN_SCALE_X_FIX(4.0f), SCREEN_SCALE_FROM_BOTTOM(WASTEDBUSTED_Y) + SCREEN_SCALE_Y(4.0f), m_BigMessage[2]);
@@ -1609,7 +1623,8 @@ void CHud::DrawAfterFade()
 			CFont::SetRightJustifyWrap(-500.0f);
 #endif
 			CFont::SetRightJustifyOn();
-			CFont::SetFontStyle(FONT_HEADING);
+			// Big message (localized) -> FONT_LOCALE for CJK.
+			CFont::SetFontStyle(FONT_LOCALE(FONT_HEADING));
 			
 			if (BigMessageX[1] >= SCREEN_WIDTH - SCREEN_SCALE_X_FIX(20.0f))
 			{
