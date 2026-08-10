@@ -271,3 +271,12 @@ CJK 绘制分支对 **ASCII 字母和汉字一视同仁，全部按“全宽方�
 数字变形/错位。注意 timer 的**文字标签**（`m_aTimerText`）复用了同一次 style 设置，
 是本地化文本，需要保留 CJK。故修法是**拆分**：数字用裸 `FONT_HEADING`，标签单独
 `FONT_LOCALE(FONT_HEADING)`。
+
+### D 修复结果（已完成）
+- timer / counter 数字改回裸 `FONT_HEADING`，标签单独 `FONT_LOCALE(FONT_HEADING)`
+  拆分完成，模拟器（RE3_HUD_TEST 临时注入验证）确认数字为正常拉丁、标签为中文。
+- 另修 `src/control/Pickups.cpp` 的 pickup 消息漏包（裸 FONT_BANK → FONT_LOCALE）。
+
+### 其余待排查的裸 FONT_BANK/HEADING（低频/边缘）
+Replay 的 "REPLAY"、SceneEdit（调试）、Streaming 载入文本、Frontend_PS2（未编译）
+等处仍是裸样式；多为调试/边缘或英文，按需再定。

@@ -994,7 +994,8 @@ CPickups::RenderPickUpText()
 
 		CFont::SetColor(CRGBA(aMessages[i].m_color.red, aMessages[i].m_color.green, aMessages[i].m_color.blue, aMessages[i].m_color.alpha));
 		CFont::SetBackGroundOnlyTextOff();
-		CFont::SetFontStyle(FONT_BANK);
+		// Pickup message is localized text -> FONT_LOCALE for CJK.
+		CFont::SetFontStyle(FONT_LOCALE(FONT_BANK));
 		CFont::PrintString(aMessages[i].m_pos.x, aMessages[i].m_pos.y, strToPrint);
 	}
 	NumMessages = 0;

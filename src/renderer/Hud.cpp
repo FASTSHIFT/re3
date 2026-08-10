@@ -920,7 +920,10 @@ void CHud::Draw()
 					CFont::SetScale(SCREEN_SCALE_X(0.8f), SCREEN_SCALE_Y(1.35f));
 					CFont::SetRightJustifyOn();
 					CFont::SetRightJustifyWrap(0.0f);
-					CFont::SetFontStyle(FONT_LOCALE(FONT_HEADING));
+					// The timer readout is pure ASCII (digits/colon): keep the raw
+					// latin FONT_HEADING so CJK languages don't box it into fixed
+					// CJK cells. The text label below IS localized (FONT_LOCALE).
+					CFont::SetFontStyle(FONT_HEADING);
 					CFont::SetPropOff();
 					CFont::SetBackGroundOnlyTextOn();
 					CFont::SetColor(CRGBA(0, 0, 0, 255));
@@ -931,6 +934,8 @@ void CHud::Draw()
 
 					if (CUserDisplay::OnscnTimer.m_sEntries[0].m_aTimerText[0]) {
 						CFont::SetPropOn();
+						// Timer label is localized text -> FONT_LOCALE for CJK.
+						CFont::SetFontStyle(FONT_LOCALE(FONT_HEADING));
 						CFont::SetColor(CRGBA(0, 0, 0, 255));
 						CFont::SetScale(SCREEN_SCALE_X(0.8f * 0.8f), SCREEN_SCALE_Y(1.35f));
 						CFont::PrintString(SCREEN_SCALE_FROM_RIGHT(TIMER_RIGHT_OFFSET) - SCREEN_SCALE_X(80.0f) + SCREEN_SCALE_X(2.0f), SCREEN_SCALE_Y(110.0f) + SCREEN_SCALE_Y_FIX(2.0f), TheText.Get(CUserDisplay::OnscnTimer.m_sEntries[0].m_aTimerText));
@@ -959,7 +964,9 @@ void CHud::Draw()
 						CFont::SetCentreOff();
 						CFont::SetRightJustifyOn();
 						CFont::SetRightJustifyWrap(0.0f);
-						CFont::SetFontStyle(FONT_LOCALE(FONT_HEADING));
+						// Counter readout is pure ASCII digits: raw latin style so
+						// CJK doesn't box it. The counter label below is localized.
+						CFont::SetFontStyle(FONT_HEADING);
 						CFont::SetColor(CRGBA(244, 20, 20, 255));
 						CFont::SetWrapx(SCREEN_STRETCH_X(DEFAULT_SCREEN_WIDTH));
 						CFont::SetPropOff();
@@ -1000,6 +1007,8 @@ void CHud::Draw()
 
 					if (CUserDisplay::OnscnTimer.m_sEntries[0].m_aCounterText[0]) {
 						CFont::SetPropOn();
+						// Counter label is localized text -> FONT_LOCALE for CJK.
+						CFont::SetFontStyle(FONT_LOCALE(FONT_HEADING));
 						CFont::SetScale(SCREEN_SCALE_X(0.8f), SCREEN_SCALE_Y(1.35f));
 						CFont::SetColor(CRGBA(0, 0, 0, 255));
 						CFont::PrintString(SCREEN_SCALE_FROM_RIGHT(TIMER_RIGHT_OFFSET) - SCREEN_SCALE_X(61.0f) + SCREEN_SCALE_X(2.0f), SCREEN_SCALE_Y(132.0f) + SCREEN_SCALE_Y_FIX(2.0f), TheText.Get(CUserDisplay::OnscnTimer.m_sEntries[0].m_aCounterText));
