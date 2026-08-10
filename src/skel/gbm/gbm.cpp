@@ -73,7 +73,12 @@ namespace gl3
 {
 int
 gl3_get_and_reset_drawcalls(void);
-}
+#if defined(LIBRW_GBM)
+// Async present (docs/16): FBO the camera just finished rendering into.
+unsigned int
+gl3_get_present_fbo(void);
+#endif
+} // namespace gl3
 } // namespace rw
 #endif
 
@@ -275,11 +280,31 @@ _psPresent(void)
 	gFrameMs = (lastWall != 0.0) ? (tw - lastWall) : 0.0;
 	lastWall = tw;
 
-	// librw's GBM camera renders into an RGB565 texture FBO (showRaster left it
-	// bound). Read it back directly as RGB565: no software conversion, half the
-	// bytes, already in the display's native format (fb0 16bpp / ST7789).
+	// librw's GBM camera renders into an RGB565 texture FBO. Async present
+	// (docs/16): showRaster keeps two FBOs and reports the one it just finished.
+	// We read back the PREVIOUS frame's FBO (already complete) while the GPU
+	// renders the current frame into the other FBO -> no glFinish stall. This
+	// costs one frame of latency. If double-buffering is off (present fbo == 0,
+	// e.g. non-GBM), fall back to reading whatever showRaster left bound.
 	double t0 = psTimer();
-	glReadPixels(0, 0, w, h, GL_RGB, GL_UNSIGNED_SHORT_5_6_5, gReadback565);
+#if defined(RW_GL3) && defined(LIBRW_GBM)
+	unsigned int presentFbo = rw::gl3::gl3_get_present_fbo();
+	if(presentFbo != 0) {
+		static unsigned int sPrevFbo = 0;
+		unsigned int readFbo = sPrevFbo;
+		sPrevFbo = presentFbo;
+		if(readFbo == 0) {
+			// First frame: nothing finished a frame ago yet, skip present.
+			gReadMs = 0.0;
+			return;
+		}
+		glBindFramebuffer(GL_FRAMEBUFFER, readFbo);
+		glReadPixels(0, 0, w, h, GL_RGB, GL_UNSIGNED_SHORT_5_6_5, gReadback565);
+	} else
+#endif
+	{
+		glReadPixels(0, 0, w, h, GL_RGB, GL_UNSIGNED_SHORT_5_6_5, gReadback565);
+	}
 	double t1 = psTimer();
 	gReadMs = t1 - t0;
 
