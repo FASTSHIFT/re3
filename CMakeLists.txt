@@ -51,7 +51,12 @@ option(${PROJECT}_RPI "Optimize for Raspberry Pi (VideoCore IV / GLES2)" OFF)
 # and the vendored static librw (the main win here). Routes ar/ranlib/nm
 # through the gcc- wrappers so LTO sections in static archives survive (works
 # with the arm cross toolchain too).
-option(${PROJECT}_LTO "Enable link-time optimization (-flto=auto) for non-Debug builds" ${${PROJECT}_RPI})
+# NOTE: default OFF. LTO caused a reproducible save-game crash/hang on the Pi
+# (see docs/14): with -flto=auto, saving corrupted state and could take the
+# whole system down (network unreachable, needed a hard reboot); the exact
+# no-LTO build is stable. Even with -fno-strict-aliasing the LTO build was
+# unsafe here, so LTO stays opt-in until the miscompile is root-caused.
+option(${PROJECT}_LTO "Enable link-time optimization (-flto=auto) for non-Debug builds (see docs/14: unsafe, save crash)" OFF)
 
 # Extra speed-oriented flags borrowed from the lv_gba_emu Pi build, filtered to
 # ones that help runtime speed (NOT the size-first ones like -falign-*=1 /
