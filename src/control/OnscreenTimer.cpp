@@ -1,5 +1,6 @@
 #include "common.h"
 
+#include <stdlib.h>
 
 #include "DMAudio.h"
 #include "Hud.h"
@@ -107,7 +108,23 @@ COnscreenTimerEntry::Process()
 
 	int32* timerPtr = CTheScripts::GetPointerToScriptVariable(m_nTimerOffset);
 	int32 oldTime = *timerPtr;
-	int32 newTime = oldTime - int32(CTimer::GetTimeStepInMilliseconds());
+
+	// Difficulty knob: slow mission countdown timers so timed missions are
+	// less punishing, without touching main.scm. RE3_TIMER_SCALE is a divisor
+	// on the per-frame decrement -- 2 makes every countdown run at half speed
+	// (twice as much real time), 1 (default) keeps vanilla timing. Read from
+	// the environment exactly once and clamped to >=1 so it can never speed
+	// timers up or stall them.
+	static float sTimerScale = 0.0f;
+	if(sTimerScale == 0.0f) {
+		const char* e = getenv("RE3_TIMER_SCALE");
+		sTimerScale = e ? (float)atof(e) : 1.0f;
+		if(sTimerScale < 1.0f) sTimerScale = 1.0f;
+	}
+
+	int32 step = int32(CTimer::GetTimeStepInMilliseconds());
+	if(sTimerScale != 1.0f) step = int32((float)step / sTimerScale);
+	int32 newTime = oldTime - step;
 	if(newTime < 0) {
 		*timerPtr = 0;
 		m_bTimerProcessed = false;
