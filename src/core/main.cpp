@@ -767,7 +767,12 @@ LoadingIslandScreen(const char *levelName)
 #else
 	CFont::SetRightJustifyWrap(150.0f);
 #endif
-	CFont::SetFontStyle(FONT_HEADING);
+	// Island loading screen city name is localized text (e.g. the Chinese
+	// city name). Upstream hardcodes FONT_HEADING here, which forces the latin
+	// atlas and renders CJK glyphs as garbage. FONT_LOCALE routes CJK to the
+	// Japanese/CJK atlas. Covers both the "WELCOME" line and the city name
+	// below, since neither resets the font style afterwards.
+	CFont::SetFontStyle(FONT_LOCALE(FONT_HEADING));
 	sprintf(str, "WELCOME TO");
 	AsciiToUnicode(str, wstr);
 	CFont::SetDropColor(CRGBA(0, 0, 0, 255));
