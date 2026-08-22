@@ -75,24 +75,11 @@
 
 ---
 
-## 构建（树莓派交叉编译）
+## 构建与部署
 
-需要 armhf 交叉工具链（`arm-linux-gnueabihf-gcc/g++`）和一份从 Pi 同步的
-sysroot；工具链文件见 `rpi-armhf-toolchain.cmake`。
-
-```bash
-cmake -S . -B build-gbm -G Ninja \
-  -DCMAKE_TOOLCHAIN_FILE=$(pwd)/rpi-armhf-toolchain.cmake \
-  -DCMAKE_BUILD_TYPE=Release \
-  -DLIBRW_PLATFORM=GL3 -DLIBRW_GL3_GFXLIB=GBM \
-  -DRE3_AUDIO=OAL -DRE3_RPI=ON \
-  -DRE3_OUTPUT_SPI=ON -DRE3_INPUT_EVDEV=ON \
-  -DRE3_CHINESE=ON
-cmake --build build-gbm
-```
-
-`RE3_RPI=ON` 会自动开启 LTO 与提速编译选项。把产物 `build-gbm/src/re3` 拷到 Pi
-上、放进你的正版 GTA III 目录即可运行。
+树莓派 ST7789 SPI 掌机版本的**完整交叉编译与部署流程**（工具链/sysroot、构建
+选项、Pi 一次性配置、systemd 开机自启、超频、排障）见
+**[docs/17 部署指南](docs/17-部署指南.md)**。
 
 其他平台（桌面 / Windows / macOS 等）的原始构建方式见
 [原始上游 README](README.upstream.md)。
@@ -116,6 +103,10 @@ cmake --build build-gbm
 | 11 | 中文字体与 GXT 本地化方案 |
 | 12 | 中文翻译批处理交接说明 |
 | 13 | 内存占用分析与优化 |
+| 14 | 编译优化与 LTO |
+| 15 | 手柄音频路由与热插拔 |
+| 16 | 异步呈现流水线设计 |
+| 17 | 部署指南（交叉编译 → 树莓派 SPI 掌机）|
 
 ---
 
