@@ -117,11 +117,14 @@ if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU" OR CMAKE_CXX_COMPILER_ID STREQUAL "Clang
                 -Wpedantic
         )
     endif()
-    # When OFF (e.g. CI on a modern GCC), silence the large set of pre-existing
-    # upstream re3 warnings that only surface on newer compilers. Appended
-    # *after* -Wall/-Wextra/-Wpedantic so they take effect. Newly written code
-    # should still be warning-clean under the strict set (turn this ON locally).
-    option(${PROJECT}_STRICT_WARNINGS "Treat all warnings strictly (no upstream suppressions)" ON)
+    # When OFF (the default), silence the large set of pre-existing upstream re3
+    # warnings that only surface on newer compilers. Appended *after*
+    # -Wall/-Wextra/-Wpedantic so they take effect. This is the default because
+    # our own new code (src/skel/gbm, drivers/st7789) is compiled with -Werror
+    # but pulls in upstream headers that are not -Wpedantic-clean, which would
+    # otherwise break the build. Turn this ON locally to audit all warnings;
+    # newly written code should still be warning-clean under the strict set.
+    option(${PROJECT}_STRICT_WARNINGS "Treat all warnings strictly (no upstream suppressions)" OFF)
     if(NOT ${PROJECT}_STRICT_WARNINGS)
         # Language-agnostic suppressions (valid for both C and C++).
         target_compile_options(${EXECUTABLE}
