@@ -320,19 +320,26 @@ CheatInput_Process(const CControllerState &s, bool inMenu)
 		uint32 want = m.steps[m.progress];
 		bool stepNow = (bits & want) == want;
 
-		// Rising edge of the current step's combo (all its keys just became
-		// held). Edge tracking per step avoids one hold matching many steps.
-		if(stepNow && m.prevStep != want) {
+		// Rising edge of the current step's combo: it is satisfied now but was
+		// NOT satisfied last frame. prevStep records last frame's satisfaction
+		// so holding the keys down only counts as ONE press (no auto-repeat).
+		bool rising = stepNow && !m.prevStep;
+
+		if(rising) {
 			m.progress++;
 			m.lastAdvMs = now;
 			if(m.progress >= m.nSteps) {
-				m.fn();         // whole sequence complete
-				m.progress = 0; // ready to fire again on next full sequence
-				m.prevStep = 0;
+				m.fn();         // whole sequence complete: fire once
+				m.progress = 0; // rearm for a fresh sequence...
+				// ...but require a release first: keep prevStep marked so the
+				// still-held keys are not read as a new step-0 press next frame.
+				m.prevStep = 1;
 				continue;
 			}
 		}
-		m.prevStep = stepNow ? want : 0;
+		// Remember whether this step's combo is currently held, so next frame's
+		// rising-edge test works and a held combo can't re-advance.
+		m.prevStep = stepNow ? 1 : 0;
 	}
 
 	return inCombo;
