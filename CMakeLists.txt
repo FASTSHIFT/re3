@@ -168,6 +168,17 @@ if(${PROJECT}_INPUT_EVDEV)
     message(STATUS "${PROJECT}_INPUT_EVDEV enabled: evdev keyboard/mouse/gamepad input")
 endif()
 
+# Gamepad cheat combos: map controller button combinations (read from a
+# cheats.ini config file) to the built-in cheat functions, so cheats can be
+# triggered on a pad without typing the PC letter strings. Config is generated
+# interactively by tools/cheat_config.py. Defaults to following INPUT_EVDEV
+# since it hooks the evdev gamepad sampling path. See docs/18.
+option(${PROJECT}_CHEATS "Gamepad button-combo cheat codes (cheats.ini)" ${${PROJECT}_INPUT_EVDEV})
+if(${PROJECT}_CHEATS)
+    add_compile_definitions(RE3_CHEATS)
+    message(STATUS "${PROJECT}_CHEATS enabled: gamepad button-combo cheat codes")
+endif()
+
 # Simplified Chinese localization. Reuses the game's Japanese CJK font pipeline
 # (big glyph atlas + full-width layout) but widens the atlas geometry to hold
 # ~1600 Chinese glyphs (64 cols x 32 rows vs Japanese 48 x 25.6). Ship the

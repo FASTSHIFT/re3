@@ -1,0 +1,32 @@
+# cheats.ini - PS5 gamepad cheat map (example)
+#
+# Copy to your game directory (next to re3 / re3.ini) as "cheats.ini", or point
+# RE3_CHEATS_FILE at it. Generate/edit interactively with tools/cheat_config.py.
+#
+# Syntax:  <step[,step...]> = <cheat_name>
+#   - '+' joins keys pressed together in one step;  ',' separates ordered steps.
+#   - A single step (no comma) is a plain combo. Multiple steps form a sequence
+#     pressed in order, so the SAME key can repeat, e.g. CROSS,CROSS,UP.
+#   - Every combo/sequence implicitly also requires the modifier key below, held
+#     for its whole duration, so cheats only fire while the modifier is held
+#     (avoids accidental triggers).
+#   - Each step fires on its rising edge; a sequence resets if idle > 2s.
+#
+# Key names:   CROSS CIRCLE TRIANGLE SQUARE  L1 R1 L2 R2  L3 R3
+#              CREATE OPTIONS  UP DOWN LEFT RIGHT
+# Cheat names: run  python3 tools/cheat_config.py --list
+
+# Modifier held for any cheat combo (DualSense "Create" button by default).
+modifier = CREATE
+
+# --- combos (keys together) ---
+L1+R1+TRIANGLE = weapons          # Full weapon set
+L1+R1+CROSS    = health           # Full health
+L1+R1+SQUARE   = armour           # Full armour
+L1+R1+CIRCLE   = money            # +$250000
+L2+R2+CROSS    = tank             # Spawn tank
+SQUARE+CIRCLE  = sunny            # Sunny weather
+
+# --- sequences (press in order; same key may repeat) ---
+UP,UP,TRIANGLE   = wanted_up      # Wanted level +2
+DOWN,DOWN,CIRCLE = wanted_down    # Clear wanted level

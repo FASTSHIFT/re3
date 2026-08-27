@@ -1,0 +1,36 @@
+/*
+ * cheat_keys.def - single source of truth for cheat-combo key names and bits.
+ *
+ * X-macro list shared by the C parser (cheat_input.cpp) and documented for the
+ * Python config tool (tools/cheat_config.py). Each row:
+ *
+ *   CHEAT_KEY(name, bit_index)
+ *     name       config-file token (as written in cheats.ini), UPPERCASE
+ *     bit_index  0..31 position in the uint32 key bitmask
+ *
+ * Keep tools/cheat_config.py's KEY_NAMES in sync with this file (same names).
+ * The bit indices themselves are internal to the C side; the tool only needs
+ * the names.
+ */
+
+/* face buttons */
+CHEAT_KEY(CROSS,     0)
+CHEAT_KEY(CIRCLE,    1)
+CHEAT_KEY(TRIANGLE,  2)
+CHEAT_KEY(SQUARE,    3)
+/* shoulders / triggers */
+CHEAT_KEY(L1,        4)
+CHEAT_KEY(R1,        5)
+CHEAT_KEY(L2,        6)
+CHEAT_KEY(R2,        7)
+/* stick clicks */
+CHEAT_KEY(L3,        8)
+CHEAT_KEY(R3,        9)
+/* menu buttons (DualSense: Create / Options) */
+CHEAT_KEY(CREATE,   10)
+CHEAT_KEY(OPTIONS,  11)
+/* dpad */
+CHEAT_KEY(UP,       12)
+CHEAT_KEY(DOWN,     13)
+CHEAT_KEY(LEFT,     14)
+CHEAT_KEY(RIGHT,    15)

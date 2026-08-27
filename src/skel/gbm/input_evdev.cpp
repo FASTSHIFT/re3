@@ -42,6 +42,9 @@
 #include "crossplatform.h" // GLFW_MOUSE_BUTTON_* constants
 #include "Pad.h"
 #include "Frontend.h" // FrontEndMenuManager.m_bMenuActive
+#ifdef RE3_CHEATS
+#include "cheat_input.h"
+#endif
 
 // ---- bit helpers ----------------------------------------------------------
 #define BITS_PER_LONG (8 * sizeof(long))
@@ -368,6 +371,10 @@ evdev_init(void)
 	sNumDevs = 0;
 	sNumPending = 0;
 	sHaveMouse = false;
+
+#ifdef RE3_CHEATS
+	CheatInput_Init();
+#endif
 
 	scan_all_devices();
 
@@ -725,6 +732,17 @@ gamepad_read_state(int fd, CControllerState &s)
 	s.RightShock = r3 ? 255 : 0;
 	s.Start = options ? 255 : 0;
 	s.Select = create ? 255 : 0;
+
+#ifdef RE3_CHEATS
+	// Gamepad cheat combos: detect on the freshly sampled state. When a combo
+	// is active this frame, suppress the modifier button's normal injection so
+	// e.g. triggering a cheat doesn't also fire Select. Reuses inMenu above.
+	if(CheatInput_Process(s, inMenu)) {
+		// Default modifier is Create -> Select; clear it. Harmless if the
+		// configured modifier is a different button.
+		s.Select = 0;
+	}
+#endif
 }
 
 static void
